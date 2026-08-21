@@ -1,13 +1,14 @@
 {
   "colors" : [
     {
+      "comment" : "Lyra purple, taken from the app icon (#4E249B), nudged brighter so it stays legible as a tint on white.",
       "color" : {
         "color-space" : "srgb",
         "components" : {
           "alpha" : "1.000",
-          "blue" : "0.235",
-          "green" : "0.478",
-          "red" : "0.902"
+          "blue" : "0.663",
+          "green" : "0.180",
+          "red" : "0.365"
         }
       },
       "idiom" : "universal"
@@ -19,13 +20,14 @@
           "value" : "dark"
         }
       ],
+      "comment" : "Same hue lifted for dark mode — the icon purple is far too dark to read as a tint against black.",
       "color" : {
         "color-space" : "srgb",
         "components" : {
           "alpha" : "1.000",
-          "blue" : "0.325",
-          "green" : "0.573",
-          "red" : "0.960"
+          "blue" : "1.000",
+          "green" : "0.612",
+          "red" : "0.702"
         }
       },
       "idiom" : "universal"

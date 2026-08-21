@@ -1,95 +1,160 @@
 #!/usr/bin/env swift
 //
-// Renders Lyra's app icon to Lyra/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png.
+// Builds the app icon from lyra-logo.png.
 //
-// Kept as a script rather than a checked-in binary so the mark can be tweaked
-// in one place. Run it from the repo root: swift scripts/make-icon.swift
+//   swift scripts/make-icon.swift
+//
+// The source logo is drawn as a rounded square sitting on a white page. iOS
+// applies its own corner mask, so shipping it as-is would round the already
+// rounded corners and leave white slivers poking out. This crops away the white
+// page and repaints what is left of it in the background purple, producing a
+// full-bleed square for the system to mask cleanly.
 //
 import AppKit
 import CoreGraphics
 import Foundation
 
-let side = 1024
-let scale = CGFloat(side) / 1024.0
+let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+let sourceURL = root.appending(path: "lyra-logo.png")
+let outputURL = root.appending(
+    path: "Lyra/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+)
 
-guard let context = CGContext(
+let outputSide = 1024
+/// A channel value above this counts as "page white" rather than artwork.
+let whiteThreshold: UInt8 = 236
+
+// MARK: - Load the source into a known RGBA layout
+
+guard let sourceData = try? Data(contentsOf: sourceURL),
+      let provider = CGDataProvider(data: sourceData as CFData),
+      let decoded = CGImage(
+        pngDataProviderSource: provider,
+        decode: nil,
+        shouldInterpolate: true,
+        intent: .defaultIntent
+      )
+else {
+    fatalError("Could not read \(sourceURL.path)")
+}
+
+let width = decoded.width
+let height = decoded.height
+let bytesPerRow = width * 4
+var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+
+pixels.withUnsafeMutableBytes { buffer in
+    guard let context = CGContext(
+        data: buffer.baseAddress,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: bytesPerRow,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { fatalError("Could not create a context for the source image") }
+
+    context.draw(decoded, in: CGRect(x: 0, y: 0, width: width, height: height))
+}
+
+@inline(__always)
+func isPageWhite(_ index: Int) -> Bool {
+    pixels[index] > whiteThreshold
+        && pixels[index + 1] > whiteThreshold
+        && pixels[index + 2] > whiteThreshold
+}
+
+// MARK: - Crop away the white page
+
+var minX = width, minY = height, maxX = -1, maxY = -1
+for y in 0..<height {
+    for x in 0..<width {
+        guard !isPageWhite(y * bytesPerRow + x * 4) else { continue }
+        if x < minX { minX = x }
+        if x > maxX { maxX = x }
+        if y < minY { minY = y }
+        if y > maxY { maxY = y }
+    }
+}
+guard maxX > minX, maxY > minY else { fatalError("The source image looks blank") }
+
+let cropWidth = maxX - minX + 1
+let cropHeight = maxY - minY + 1
+
+// Sample the background well inside the artwork's top-left, past the rounded
+// corner but before the lyre starts.
+let sampleX = minX + cropWidth / 8
+let sampleY = minY + cropHeight / 8
+let sampleIndex = sampleY * bytesPerRow + sampleX * 4
+let background = (r: pixels[sampleIndex], g: pixels[sampleIndex + 1], b: pixels[sampleIndex + 2])
+
+// MARK: - Repaint the leftover white corners
+
+let cropBytesPerRow = cropWidth * 4
+var cropped = [UInt8](repeating: 0, count: cropBytesPerRow * cropHeight)
+
+for y in 0..<cropHeight {
+    let sourceRow = (minY + y) * bytesPerRow
+    let destinationRow = y * cropBytesPerRow
+    for x in 0..<cropWidth {
+        let source = sourceRow + (minX + x) * 4
+        let destination = destinationRow + x * 4
+
+        if isPageWhite(source) {
+            cropped[destination] = background.r
+            cropped[destination + 1] = background.g
+            cropped[destination + 2] = background.b
+        } else {
+            cropped[destination] = pixels[source]
+            cropped[destination + 1] = pixels[source + 1]
+            cropped[destination + 2] = pixels[source + 2]
+        }
+        cropped[destination + 3] = 255
+    }
+}
+
+// MARK: - Scale to 1024 and write
+
+let croppedImage: CGImage = cropped.withUnsafeMutableBytes { buffer in
+    guard let context = CGContext(
+        data: buffer.baseAddress,
+        width: cropWidth,
+        height: cropHeight,
+        bitsPerComponent: 8,
+        bytesPerRow: cropBytesPerRow,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ), let image = context.makeImage() else {
+        fatalError("Could not rebuild the cropped image")
+    }
+    return image
+}
+
+guard let output = CGContext(
     data: nil,
-    width: side,
-    height: side,
+    width: outputSide,
+    height: outputSide,
     bitsPerComponent: 8,
     bytesPerRow: 0,
     space: CGColorSpace(name: CGColorSpace.sRGB)!,
-    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-) else {
-    fatalError("Could not create a bitmap context")
-}
+    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+) else { fatalError("Could not create the output context") }
 
-let rect = CGRect(x: 0, y: 0, width: side, height: side)
-
-// Background: a deep vertical gradient so the icon reads on both light and
-// dark home screens.
-let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-let background = CGGradient(
-    colorsSpace: colorSpace,
-    colors: [
-        CGColor(srgbRed: 0.129, green: 0.118, blue: 0.153, alpha: 1),
-        CGColor(srgbRed: 0.055, green: 0.051, blue: 0.071, alpha: 1),
-    ] as CFArray,
-    locations: [0, 1]
-)!
-context.drawLinearGradient(
-    background,
-    start: CGPoint(x: 0, y: side),
-    end: CGPoint(x: 0, y: 0),
-    options: []
+output.interpolationQuality = .high
+// Paint the background first so any rounding difference in aspect ratio fills
+// with purple rather than black.
+output.setFillColor(
+    red: CGFloat(background.r) / 255,
+    green: CGFloat(background.g) / 255,
+    blue: CGFloat(background.b) / 255,
+    alpha: 1
 )
+output.fill(CGRect(x: 0, y: 0, width: outputSide, height: outputSide))
+output.draw(croppedImage, in: CGRect(x: 0, y: 0, width: outputSide, height: outputSide))
 
-// A lyre suggested with strings: vertical lines of varying height, which double
-// as an equaliser. Simple enough to stay legible at 40pt.
-let accentTop = CGColor(srgbRed: 0.980, green: 0.616, blue: 0.322, alpha: 1)
-let accentBottom = CGColor(srgbRed: 0.902, green: 0.353, blue: 0.235, alpha: 1)
-let strings = CGGradient(
-    colorsSpace: colorSpace,
-    colors: [accentTop, accentBottom] as CFArray,
-    locations: [0, 1]
-)!
+guard let finalImage = output.makeImage(),
+      let png = NSBitmapImageRep(cgImage: finalImage).representation(using: .png, properties: [:])
+else { fatalError("Could not encode the icon") }
 
-let heights: [CGFloat] = [0.34, 0.58, 0.82, 0.62, 0.42]
-let barWidth: CGFloat = 74 * scale
-let gap: CGFloat = 46 * scale
-let totalWidth = CGFloat(heights.count) * barWidth + CGFloat(heights.count - 1) * gap
-let originX = (CGFloat(side) - totalWidth) / 2
-let baseY = CGFloat(side) * 0.22
-
-context.saveGState()
-let barsPath = CGMutablePath()
-for (index, fraction) in heights.enumerated() {
-    let x = originX + CGFloat(index) * (barWidth + gap)
-    let height = CGFloat(side) * 0.56 * fraction
-    barsPath.addRoundedRect(
-        in: CGRect(x: x, y: baseY, width: barWidth, height: height),
-        cornerWidth: barWidth / 2,
-        cornerHeight: barWidth / 2
-    )
-}
-context.addPath(barsPath)
-context.clip()
-context.drawLinearGradient(
-    strings,
-    start: CGPoint(x: 0, y: CGFloat(side) * 0.78),
-    end: CGPoint(x: 0, y: baseY),
-    options: []
-)
-context.restoreGState()
-
-guard let image = context.makeImage() else { fatalError("Could not render the icon") }
-
-let output = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    .appending(path: "Lyra/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png")
-
-let bitmap = NSBitmapImageRep(cgImage: image)
-guard let data = bitmap.representation(using: .png, properties: [:]) else {
-    fatalError("Could not encode PNG")
-}
-try data.write(to: output)
-print("Wrote \(output.path)")
+try png.write(to: outputURL)
+print("Wrote \(outputURL.lastPathComponent) — \(outputSide)×\(outputSide), cropped from \(cropWidth)×\(cropHeight)")

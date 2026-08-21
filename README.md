@@ -90,7 +90,8 @@ Any folder structure works. `Artist/Album/01 Title.flac` is ideal, because Lyra 
 ```
 project.yml              XcodeGen spec — the source of truth for the project
 scripts/build-ipa.sh     unsigned archive → build/Lyra.ipa
-scripts/make-icon.swift  regenerates the app icon (swift scripts/make-icon.swift)
+lyra-logo.png            source artwork for the app icon
+scripts/make-icon.swift  lyra-logo.png -> AppIcon.png (swift scripts/make-icon.swift)
 Lyra/App/                app entry point, tab shell
 Lyra/Model/              Track, Playlist, scanning, grouping
 Lyra/Metadata/           tag reading, FLAC parser, artwork cache
