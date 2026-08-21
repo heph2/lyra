@@ -71,6 +71,46 @@ enum AudioFile {
         )
     }
 
+    /// What is actually sitting in the drop zone, regardless of whether we can
+    /// play it. Used by the empty state to tell the difference between "you put
+    /// the files somewhere else" and "these files are in a format Lyra cannot
+    /// read" — on a sideloaded app there is no console to check.
+    struct Inventory: Sendable, Equatable {
+        var totalFiles = 0
+        var audioFiles = 0
+        /// Extensions we saw but skipped, most distinctive first.
+        var unsupportedExtensions: [String] = []
+    }
+
+    static func inventory() -> Inventory {
+        var result = Inventory()
+        var skipped: Set<String> = []
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: documentsURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return result }
+
+        for case let url as URL in enumerator {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else {
+                continue
+            }
+            result.totalFiles += 1
+
+            if isSupported(url) {
+                result.audioFiles += 1
+            } else {
+                let ext = url.pathExtension.lowercased()
+                // The seeded readme is ours, not something the user put there.
+                if !ext.isEmpty, ext != "txt" { skipped.insert(ext) }
+            }
+        }
+
+        result.unsupportedExtensions = skipped.sorted()
+        return result
+    }
+
     static var artworkCacheURL: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL.temporaryDirectory

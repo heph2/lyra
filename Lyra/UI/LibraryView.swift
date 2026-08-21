@@ -157,12 +157,59 @@ struct EmptyLibraryView: View {
         ContentUnavailableView {
             Label("No Music Yet", systemImage: "music.note.house")
         } description: {
-            Text("Open the **Files** app, go to *On My iPhone → Lyra*, and drop your music folders in. Then pull down to refresh.\n\nEverything stays on this device.")
+            VStack(spacing: 14) {
+                Text(explanation)
+                diagnostics
+            }
         } actions: {
             Button("Rescan", systemImage: "arrow.clockwise") {
                 scanner.scanInBackground()
             }
             .buttonStyle(.borderedProminent)
+        }
+    }
+
+    /// The three cases worth distinguishing: nothing there, files there but
+    /// none playable, or files there that we should have picked up.
+    private var explanation: LocalizedStringKey {
+        let inventory = scanner.inventory
+
+        if inventory.totalFiles == 0 {
+            return """
+            Open the **Files** app, go to *On My iPhone → Lyra*, and drop your \
+            music folders in. Then pull down to refresh.
+
+            That folder has to be the one Lyra created — a folder you make \
+            yourself under *On My iPhone* belongs to the Files app, and Lyra \
+            cannot read it.
+            """
+        }
+        if inventory.audioFiles == 0 {
+            return "Lyra found files in its folder, but none in a format it can play."
+        }
+        return "Lyra found playable files but could not add them. Try rescanning."
+    }
+
+    @ViewBuilder
+    private var diagnostics: some View {
+        let inventory = scanner.inventory
+
+        if inventory.totalFiles > 0 {
+            VStack(spacing: 4) {
+                Text("\(inventory.totalFiles) file\(inventory.totalFiles == 1 ? "" : "s") in Lyra's folder, \(inventory.audioFiles) playable")
+                if !inventory.unsupportedExtensions.isEmpty {
+                    Text("Skipped: " + inventory.unsupportedExtensions.map { "." + $0 }.joined(separator: " "))
+                }
+                Text("Supported: mp3, m4a, aac, alac, flac, wav, aiff, caf")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+
+        if let error = scanner.lastError {
+            Text(error)
+                .font(.caption2)
+                .foregroundStyle(.red)
         }
     }
 }

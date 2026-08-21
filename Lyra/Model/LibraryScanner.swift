@@ -15,6 +15,8 @@ final class LibraryScanner {
     private(set) var total = 0
     private(set) var lastScanDate: Date?
     private(set) var lastError: String?
+    /// What the last scan actually saw on disk, for the empty state to explain.
+    private(set) var inventory = AudioFile.Inventory()
 
     /// How many files parse tags concurrently. High enough to keep the decoder
     /// busy, low enough not to thrash memory with embedded artwork.
@@ -67,6 +69,8 @@ final class LibraryScanner {
             // If the user emptied the folder, put the readme back so the app
             // does not silently vanish from the Files app.
             AudioFile.prepareDropZone()
+
+            inventory = AudioFile.inventory()
 
             lastScanDate = Date()
         } catch {
