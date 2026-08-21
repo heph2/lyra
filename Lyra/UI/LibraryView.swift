@@ -12,6 +12,7 @@ struct LibraryView: View {
     @AppStorage("library.sort") private var sort: TrackSort = .title
 
     @Environment(LibraryScanner.self) private var scanner
+    @Environment(PlayerController.self) private var player
     @Query private var tracks: [Track]
 
     var body: some View {
@@ -68,6 +69,17 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        // A dependable way into the full player. The tab-bar mini player is the
+        // usual route, but a plain toolbar button also gives VoiceOver and
+        // hardware-keyboard users something to hit.
+        if player.hasQueue {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Now Playing", systemImage: "waveform") {
+                    player.isNowPlayingPresented = true
+                }
+            }
+        }
+
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 if section == .songs {

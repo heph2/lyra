@@ -25,24 +25,27 @@ final class NowPlayingCenter {
 
         let center = MPRemoteCommandCenter.shared()
 
+        // Every handler below is `@Sendable` and hops explicitly to the main
+        // actor. MediaPlayer does not promise which queue it calls these on,
+        // and an isolation-inheriting closure would trap rather than misbehave.
         center.playCommand.addTarget { [weak self] _ in
-            self?.onPlay?()
+            Task { @MainActor in self?.onPlay?() }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.onPause?()
+            Task { @MainActor in self?.onPause?() }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.onToggle?()
+            Task { @MainActor in self?.onToggle?() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.onNext?()
+            Task { @MainActor in self?.onNext?() }
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.onPrevious?()
+            Task { @MainActor in self?.onPrevious?() }
             return .success
         }
 
@@ -50,7 +53,8 @@ final class NowPlayingCenter {
         center.changePlaybackPositionCommand.isEnabled = true
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            self?.onSeek?(event.positionTime)
+            let position = event.positionTime
+            Task { @MainActor in self?.onSeek?(position) }
             return .success
         }
 
@@ -58,7 +62,8 @@ final class NowPlayingCenter {
         center.skipForwardCommand.preferredIntervals = [15]
         center.skipForwardCommand.addTarget { [weak self] event in
             guard let event = event as? MPSkipIntervalCommandEvent else { return .commandFailed }
-            self?.onSkip?(event.interval)
+            let interval = event.interval
+            Task { @MainActor in self?.onSkip?(interval) }
             return .success
         }
 
@@ -66,7 +71,8 @@ final class NowPlayingCenter {
         center.skipBackwardCommand.preferredIntervals = [15]
         center.skipBackwardCommand.addTarget { [weak self] event in
             guard let event = event as? MPSkipIntervalCommandEvent else { return .commandFailed }
-            self?.onSkip?(-event.interval)
+            let interval = event.interval
+            Task { @MainActor in self?.onSkip?(-interval) }
             return .success
         }
 
@@ -101,7 +107,13 @@ final class NowPlayingCenter {
             info[MPMediaItemPropertyAlbumTrackNumber] = track.trackNumber
         }
         if let image = ArtworkCache.shared.image(for: track.artworkHash) {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            // MediaPlayer calls this handler on its own private queue. Without
+            // `@Sendable` the closure inherits this method's main-actor
+            // isolation, Swift 6 injects an executor assertion, and the process
+            // traps the first time a track with cover art starts playing.
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in
+                image
+            }
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info

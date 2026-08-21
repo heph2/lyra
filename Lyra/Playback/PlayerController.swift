@@ -55,6 +55,10 @@ final class PlayerController {
     /// fight the gesture.
     var isScrubbing = false
 
+    /// Drives the Now Playing sheet. Lives here rather than in a view's local
+    /// state so any screen can open the full player.
+    var isNowPlayingPresented = false
+
     // MARK: - Dependencies
 
     private let engine: any PlaybackEngine

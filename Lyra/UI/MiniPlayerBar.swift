@@ -9,21 +9,32 @@ struct MiniPlayerBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            ArtworkView(hash: player.currentTrack?.artworkHash, size: 32, cornerRadius: 5)
+            // An explicit Button rather than `onTapGesture`: inside the tab bar
+            // accessory a bare tap gesture is swallowed and never opens the
+            // Now Playing sheet.
+            Button(action: onTap) {
+                HStack(spacing: 12) {
+                    ArtworkView(hash: player.currentTrack?.artworkHash, size: 32, cornerRadius: 5)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(player.currentTrack?.title ?? "Nothing Playing")
-                    .font(.subheadline)
-                    .lineLimit(1)
-                if let artist = player.currentTrack?.displayArtist {
-                    Text(artist)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(player.currentTrack?.title ?? "Nothing Playing")
+                            .font(.subheadline)
+                            .lineLimit(1)
+                        if let artist = player.currentTrack?.displayArtist {
+                            Text(artist)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: 4)
                 }
+                .contentShape(.rect)
             }
-
-            Spacer(minLength: 4)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Now playing: \(player.currentTrack?.title ?? "nothing")")
+            .accessibilityHint("Opens the full player")
 
             Button {
                 player.togglePlayPause()
@@ -47,7 +58,5 @@ struct MiniPlayerBar: View {
             .accessibilityLabel("Next track")
         }
         .padding(.horizontal, 12)
-        .contentShape(.rect)
-        .onTapGesture(perform: onTap)
     }
 }

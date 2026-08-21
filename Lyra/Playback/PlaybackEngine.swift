@@ -139,16 +139,21 @@ final class AVPlayerEngine: PlaybackEngine {
     }
 
     private func observeStatus(of item: AVPlayerItem) {
+        // KVO on `status` fires on whichever queue AVFoundation happens to be
+        // using, never reliably the main one. Read what we need here, then hop
+        // to the main actor with plain values — `assumeIsolated` would trap.
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-            MainActor.assumeIsolated {
+            let status = item.status
+            let seconds = CMTimeGetSeconds(item.duration)
+            let message = item.error?.localizedDescription
+
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                switch item.status {
+                switch status {
                 case .readyToPlay:
-                    let seconds = CMTimeGetSeconds(item.duration)
                     if seconds.isFinite, seconds > 0 { self.loadedDuration = seconds }
                 case .failed:
-                    let message = item.error?.localizedDescription ?? "This file could not be played."
-                    self.onError?(message)
+                    self.onError?(message ?? "This file could not be played.")
                 default:
                     break
                 }

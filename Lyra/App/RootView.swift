@@ -7,14 +7,15 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTab: TabIdentifier = .library
-    @State private var showingNowPlaying = false
 
     enum TabIdentifier: Hashable {
         case library, playlists, search
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        @Bindable var player = player
+
+        return TabView(selection: $selectedTab) {
             Tab("Library", systemImage: "music.note.list", value: TabIdentifier.library) {
                 LibraryView()
             }
@@ -28,10 +29,10 @@ struct RootView: View {
         // iOS 26 parks the mini player in the tab bar itself, which is exactly
         // where a persistent transport belongs.
         .modifier(MiniPlayerAccessory(isActive: player.hasQueue) {
-            showingNowPlaying = true
+            player.isNowPlayingPresented = true
         })
         .tabBarMinimizeBehavior(.onScrollDown)
-        .sheet(isPresented: $showingNowPlaying) {
+        .sheet(isPresented: $player.isNowPlayingPresented) {
             NowPlayingView()
         }
         .task {
