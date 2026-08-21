@@ -39,15 +39,22 @@ actor LibraryStore {
     /// so this stays fast even on a large library; tag reading is the caller's
     /// job and happens concurrently afterwards.
     func planScan() throws -> ScanPlan {
-        let onDisk = Self.enumerateAudioFiles()
+        let onDisk = SourceRegistry.shared.enumerateAudioFiles()
+        // A source we cannot open right now is not a source with no music in
+        // it. Anything belonging to one is held back from the removal list, so
+        // unplugging a drive does not wipe the library and gut its playlists.
+        let unreachable = SourceRegistry.shared.unreachableSourceIDs()
+
         var plan = ScanPlan()
         plan.totalOnDisk = onDisk.count
 
         let existing = try modelContext.fetch(FetchDescriptor<Track>())
         var known: [String: (size: Int64, modified: Date)] = [:]
+        var sourceByPath: [String: String] = [:]
         known.reserveCapacity(existing.count)
         for track in existing {
             known[track.relativePath] = (track.fileSize, track.fileModified)
+            sourceByPath[track.relativePath] = track.sourceID
         }
 
         var seen = Set<String>()
@@ -66,7 +73,11 @@ actor LibraryStore {
             }
         }
 
-        plan.removedPaths = known.keys.filter { !seen.contains($0) }
+        plan.removedPaths = known.keys.filter { path in
+            guard !seen.contains(path) else { return false }
+            let source = sourceByPath[path] ?? SourceRegistry.dropZoneID
+            return !unreachable.contains(source)
+        }
         return plan
     }
 
@@ -110,6 +121,7 @@ actor LibraryStore {
     /// original `dateAdded` are intentionally left alone.
     private func apply(_ item: ImportedTrack, to track: Track) {
         let m = item.metadata
+        let split = AudioFile.split(trackPath: item.file.relativePath)
         track.title = m.title
         track.artist = m.artist
         track.albumArtist = m.albumArtist.isEmpty ? m.artist : m.albumArtist
@@ -122,7 +134,8 @@ actor LibraryStore {
         track.artworkHash = item.artworkHash
         track.fileSize = item.file.size
         track.fileModified = item.file.modified
-        track.folderPath = AudioFile.parentFolder(ofRelativePath: item.file.relativePath)
+        track.sourceID = split.sourceID
+        track.folderPath = AudioFile.parentFolder(ofRelativePath: split.innerPath)
     }
 
     func trackCount() throws -> Int {
@@ -150,34 +163,12 @@ actor LibraryStore {
         try modelContext.save()
     }
 
-    // MARK: - Disk walk
-
-    /// Recursive walk of the Files-app drop zone. Hidden files, iCloud
-    /// placeholders and unsupported extensions are skipped.
-    nonisolated static func enumerateAudioFiles() -> [ScannedFile] {
-        let root = AudioFile.documentsURL
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
-
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
-
-        var results: [ScannedFile] = []
-        for case let url as URL in enumerator {
-            guard AudioFile.isSupported(url) else { continue }
-            guard let values = try? url.resourceValues(forKeys: Set(keys)),
-                  values.isRegularFile == true,
-                  let relativePath = AudioFile.relativePath(for: url)
-            else { continue }
-
-            results.append(ScannedFile(
-                relativePath: relativePath,
-                size: Int64(values.fileSize ?? 0),
-                modified: values.contentModificationDate ?? .distantPast
-            ))
-        }
-        return results
+    /// Drops every track belonging to a source the user has removed.
+    func removeTracks(ofSource sourceID: String) throws {
+        try modelContext.delete(
+            model: Track.self,
+            where: #Predicate { $0.sourceID == sourceID }
+        )
+        try modelContext.save()
     }
 }

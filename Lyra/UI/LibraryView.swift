@@ -10,6 +10,7 @@ struct LibraryView: View {
 
     @AppStorage("library.section") private var section: Section = .songs
     @AppStorage("library.sort") private var sort: TrackSort = .title
+    @State private var showingSources = false
 
     @Environment(LibraryScanner.self) private var scanner
     @Environment(PlayerController.self) private var player
@@ -19,7 +20,7 @@ struct LibraryView: View {
         NavigationStack {
             Group {
                 if tracks.isEmpty {
-                    EmptyLibraryView()
+                    EmptyLibraryView { showingSources = true }
                 } else {
                     content
                 }
@@ -40,6 +41,7 @@ struct LibraryView: View {
                 }
             }
             .refreshable { await scanner.scan() }
+            .sheet(isPresented: $showingSources) { SourcesView() }
         }
     }
 
@@ -53,7 +55,7 @@ struct LibraryView: View {
         case .artists:
             ArtistsListView(artists: LibraryGrouping.artists(from: tracks))
         case .folders:
-            FolderBrowserView(path: "", tracks: tracks)
+            FolderBrowserView(tracks: tracks)
         }
     }
 
@@ -90,6 +92,9 @@ struct LibraryView: View {
                     }
                 }
                 Divider()
+                Button("Music Folders…", systemImage: "folder.badge.gearshape") {
+                    showingSources = true
+                }
                 Button("Rescan Library", systemImage: "arrow.clockwise") {
                     scanner.scanInBackground()
                 }
@@ -163,6 +168,10 @@ struct PlayAllHeader: View {
 // MARK: - Empty & progress states
 
 struct EmptyLibraryView: View {
+    /// Presentation is owned by `LibraryView`. A `.sheet` attached down here,
+    /// inside `ContentUnavailableView`'s actions, silently fails to present.
+    var onManageFolders: () -> Void
+
     @Environment(LibraryScanner.self) private var scanner
 
     var body: some View {
@@ -178,6 +187,8 @@ struct EmptyLibraryView: View {
                 scanner.scanInBackground()
             }
             .buttonStyle(.borderedProminent)
+
+            Button("Music Folders…", systemImage: "folder.badge.gearshape", action: onManageFolders)
         }
     }
 
@@ -194,6 +205,8 @@ struct EmptyLibraryView: View {
             That folder has to be the one Lyra created — a folder you make \
             yourself under *On My iPhone* belongs to the Files app, and Lyra \
             cannot read it.
+
+            Or add a folder from anywhere else and Lyra will play it in place.
             """
         }
         if inventory.audioFiles == 0 {

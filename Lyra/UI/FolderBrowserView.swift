@@ -1,18 +1,63 @@
 import SwiftUI
 
-/// Browses the library the way it sits on disk.
+/// Root of the Folders tab.
 ///
-/// People who curate their own music think in folders — `Artist/Album/…` — and
-/// that structure is often more accurate than the tags. The whole tree is
-/// derived from `Track.folderPath`, so browsing never touches the filesystem.
+/// With only the built-in drop zone there is nothing to choose between, so it
+/// browses straight into it. Once the user has added folders of their own, the
+/// top level becomes the list of those folders.
 struct FolderBrowserView: View {
-    let path: String
     let tracks: [Track]
 
-    @Environment(PlayerController.self) private var player
+    private var sources: [MusicSource] { SourceRegistry.shared.allSources }
+
+    var body: some View {
+        if sources.count <= 1 {
+            FolderContentsView(path: "", sourceID: SourceRegistry.dropZoneID, tracks: tracks)
+        } else {
+            List(sources) { source in
+                let count = LibraryGrouping.tracksRecursively(
+                    under: "",
+                    sourceID: source.id,
+                    tracks: tracks
+                ).count
+                let reachable = SourceRegistry.shared.isReachable(source.id)
+
+                NavigationLink(value: FolderRoute(path: "", sourceID: source.id)) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.displayName)
+                            Text(reachable
+                                 ? "\(count) track\(count == 1 ? "" : "s")"
+                                 : "Unavailable — folder can't be reached")
+                                .font(.caption)
+                                .foregroundStyle(reachable ? .secondary : Color.orange)
+                        }
+                    } icon: {
+                        Image(systemName: source.isDropZone ? "iphone" : "folder.badge.gearshape")
+                            .foregroundStyle(reachable ? Color.accentColor : Color.orange)
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .navigationDestination(for: FolderRoute.self) { route in
+                FolderContentsView(path: route.path, sourceID: route.sourceID, tracks: tracks)
+                    .navigationTitle(route.path.isEmpty
+                                     ? SourceRegistry.shared.displayName(for: route.sourceID)
+                                     : AudioFile.folderDisplayName(route.path))
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+    }
+}
+
+/// One folder's contents: subfolders, then the tracks sitting directly in it.
+struct FolderContentsView: View {
+    let path: String
+    let sourceID: String
+    let tracks: [Track]
 
     private var node: LibraryGrouping.FolderNode {
-        LibraryGrouping.folder(at: path, tracks: tracks)
+        LibraryGrouping.folder(at: path, sourceID: sourceID, tracks: tracks)
     }
 
     var body: some View {
@@ -21,15 +66,19 @@ struct FolderBrowserView: View {
         List {
             if !node.subfolders.isEmpty || !node.tracks.isEmpty {
                 Section {
-                    PlayAllHeader(tracks: LibraryGrouping.tracksRecursively(under: path, tracks: tracks))
-                        .listRowSeparator(.hidden)
+                    PlayAllHeader(tracks: LibraryGrouping.tracksRecursively(
+                        under: path,
+                        sourceID: sourceID,
+                        tracks: tracks
+                    ))
+                    .listRowSeparator(.hidden)
                 }
             }
 
             if !node.subfolders.isEmpty {
                 Section {
                     ForEach(node.subfolders, id: \.self) { subfolder in
-                        NavigationLink(value: FolderRoute(path: subfolder)) {
+                        NavigationLink(value: FolderRoute(path: subfolder, sourceID: sourceID)) {
                             Label {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(AudioFile.folderDisplayName(subfolder))
@@ -56,14 +105,18 @@ struct FolderBrowserView: View {
         }
         .listStyle(.plain)
         .navigationDestination(for: FolderRoute.self) { route in
-            FolderBrowserView(path: route.path, tracks: tracks)
+            FolderContentsView(path: route.path, sourceID: route.sourceID, tracks: tracks)
                 .navigationTitle(AudioFile.folderDisplayName(route.path))
                 .navigationBarTitleDisplayMode(.inline)
         }
     }
 
     private func countLabel(for subfolder: String) -> String {
-        let count = LibraryGrouping.tracksRecursively(under: subfolder, tracks: tracks).count
+        let count = LibraryGrouping.tracksRecursively(
+            under: subfolder,
+            sourceID: sourceID,
+            tracks: tracks
+        ).count
         return "\(count) track\(count == 1 ? "" : "s")"
     }
 }
@@ -72,4 +125,5 @@ struct FolderBrowserView: View {
 /// with other string-valued links.
 struct FolderRoute: Hashable {
     let path: String
+    let sourceID: String
 }

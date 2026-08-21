@@ -82,12 +82,12 @@ enum AudioFile {
         var unsupportedExtensions: [String] = []
     }
 
-    static func inventory() -> Inventory {
+    static func inventory(of root: URL) -> Inventory {
         var result = Inventory()
         var skipped: Set<String> = []
 
         guard let enumerator = FileManager.default.enumerator(
-            at: documentsURL,
+            at: root,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return result }
@@ -119,6 +119,29 @@ enum AudioFile {
 
     static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    // MARK: - Track paths
+
+    /// A track's identity is its path *qualified by which source it came from*.
+    ///
+    /// Drop-zone tracks keep a bare relative path, exactly as before external
+    /// folders existed, so libraries and playlists written by earlier versions
+    /// keep working untouched. Tracks from a picked folder are prefixed with
+    /// `@<source-id>/`, which cannot collide because a real relative path never
+    /// starts with `@`.
+    static func trackPath(sourceID: String, innerPath: String) -> String {
+        sourceID == SourceRegistry.dropZoneID ? innerPath : "@\(sourceID)/\(innerPath)"
+    }
+
+    /// Inverse of `trackPath(sourceID:innerPath:)`.
+    static func split(trackPath path: String) -> (sourceID: String, innerPath: String) {
+        guard path.hasPrefix("@"), let slash = path.firstIndex(of: "/") else {
+            return (SourceRegistry.dropZoneID, path)
+        }
+        let sourceID = String(path[path.index(after: path.startIndex)..<slash])
+        let innerPath = String(path[path.index(after: slash)...])
+        return (sourceID, innerPath)
     }
 
     /// Absolute URL for a stored track path. Resolved fresh every time so it

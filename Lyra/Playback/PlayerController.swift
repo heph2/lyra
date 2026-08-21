@@ -76,6 +76,9 @@ final class PlayerController {
     /// we know whether resuming after an interruption is appropriate.
     private var wasPlayingBeforeInterruption = false
 
+    /// Guards against spinning through a queue whose files cannot be reached.
+    private var consecutiveLoadFailures = 0
+
     init(container: ModelContainer, engine: (any PlaybackEngine)? = nil) {
         self.container = container
         self.engine = engine ?? AVPlayerEngine()
@@ -307,12 +310,30 @@ final class PlayerController {
     private func loadCurrent(autoplay: Bool) {
         guard let track = currentTrack else { return }
 
+        // The folder this track lives in may be gone — an external drive
+        // unplugged, a permission revoked. Skip it rather than stalling, but
+        // give up once we have tried the whole queue, or an unreachable folder
+        // plus repeat-all would spin forever.
+        guard let url = track.fileURL else {
+            consecutiveLoadFailures += 1
+            guard consecutiveLoadFailures <= order.count else {
+                consecutiveLoadFailures = 0
+                errorMessage = "None of these tracks are in a folder Lyra can reach right now."
+                finishQueue()
+                return
+            }
+            errorMessage = "\(track.title) is in a folder Lyra can't reach right now."
+            next(userInitiated: false)
+            return
+        }
+        consecutiveLoadFailures = 0
+
         errorMessage = nil
         currentTime = 0
         duration = track.duration
 
         session.activate()
-        engine.load(url: track.fileURL, autoplay: autoplay)
+        engine.load(url: url, autoplay: autoplay)
         isPlaying = autoplay
 
         nowPlaying.update(track: track, isPlaying: autoplay, elapsed: 0, duration: track.duration)

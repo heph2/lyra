@@ -70,12 +70,35 @@ final class LibraryScanner {
             // does not silently vanish from the Files app.
             AudioFile.prepareDropZone()
 
-            inventory = AudioFile.inventory()
+            inventory = SourceRegistry.shared.inventory()
 
             lastScanDate = Date()
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    // MARK: - Sources
+
+    /// Adds folders picked in the document importer and rescans.
+    func addFolders(_ urls: [URL]) {
+        var added = false
+        for url in urls where SourceRegistry.shared.add(folder: url) != nil {
+            added = true
+        }
+        guard added else { return }
+        scanInBackground()
+    }
+
+    /// Forgets a folder and drops its tracks. The files themselves are never
+    /// touched — they live outside the app and are not ours to delete.
+    func removeSource(_ sourceID: String) async {
+        SourceRegistry.shared.remove(sourceID: sourceID)
+
+        let store = LibraryStore(modelContainer: container)
+        try? await store.removeTracks(ofSource: sourceID)
+
+        inventory = SourceRegistry.shared.inventory()
     }
 
     /// Fire-and-forget wrapper for `.task` / `.onChange` call sites.
@@ -130,8 +153,15 @@ final class LibraryScanner {
     /// unreadable file must not abort the scan; it lands in the library with
     /// path-derived metadata instead.
     private nonisolated static func importOne(_ file: ScannedFile) async -> ImportedTrack {
-        let url = AudioFile.url(forRelativePath: file.relativePath)
-        let metadata = await MetadataReader.read(url: url, relativePath: file.relativePath)
+        guard let url = SourceRegistry.shared.url(forTrackPath: file.relativePath) else {
+            // Source went away mid-scan; fall back to path-derived metadata.
+            var metadata = TrackMetadata()
+            metadata.applyPathFallbacks(relativePath: file.relativePath)
+            return ImportedTrack(file: file, metadata: metadata, artworkHash: nil)
+        }
+
+        let inner = AudioFile.split(trackPath: file.relativePath).innerPath
+        let metadata = await MetadataReader.read(url: url, relativePath: inner)
 
         var hash: String?
         if let data = metadata.artworkData {

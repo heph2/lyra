@@ -99,15 +99,15 @@ enum LibraryGrouping {
 
     // MARK: - Folders
 
-    /// Builds the contents of one folder: its immediate subfolders and its own
-    /// files. Mirrors what the user actually dropped into the Files app.
-    static func folder(at path: String, tracks: [Track]) -> FolderNode {
+    /// Builds the contents of one folder within one source: its immediate
+    /// subfolders and its own files. Mirrors the tree as it sits on disk.
+    static func folder(at path: String, sourceID: String, tracks: [Track]) -> FolderNode {
         let prefix = path.isEmpty ? "" : path + "/"
 
         var subfolders = Set<String>()
         var direct: [Track] = []
 
-        for track in tracks {
+        for track in tracks where track.sourceID == sourceID {
             let folder = track.folderPath
             if folder == path {
                 direct.append(track)
@@ -129,11 +129,14 @@ enum LibraryGrouping {
         )
     }
 
-    /// Every track at or below `path`, in folder-then-track order — what
-    /// "play this folder" should queue up.
-    static func tracksRecursively(under path: String, tracks: [Track]) -> [Track] {
+    /// Every track at or below `path` within one source, in folder-then-track
+    /// order — what "play this folder" should queue up.
+    static func tracksRecursively(under path: String, sourceID: String, tracks: [Track]) -> [Track] {
         let prefix = path.isEmpty ? "" : path + "/"
-        let matching = tracks.filter { path.isEmpty || $0.folderPath == path || $0.folderPath.hasPrefix(prefix) }
+        let matching = tracks.filter {
+            guard $0.sourceID == sourceID else { return false }
+            return path.isEmpty || $0.folderPath == path || $0.folderPath.hasPrefix(prefix)
+        }
         return matching.sorted {
             if $0.folderPath != $1.folderPath {
                 return $0.folderPath.localizedStandardCompare($1.folderPath) == .orderedAscending

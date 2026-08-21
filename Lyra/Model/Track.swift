@@ -3,9 +3,15 @@ import SwiftData
 
 @Model
 final class Track {
-    /// Path relative to `Documents/` — the stable identity of a track across
-    /// app reinstalls, when the container UUID changes.
+    /// Source-qualified path — the stable identity of a track across app
+    /// reinstalls, when the container UUID changes. Bare relative path for the
+    /// drop zone, `@<source-id>/<path>` for a picked folder.
+    /// See `AudioFile.trackPath(sourceID:innerPath:)`.
     @Attribute(.unique) var relativePath: String
+
+    /// Which folder this track lives in. Defaults to the drop zone so libraries
+    /// written before external folders existed migrate without a rescan.
+    var sourceID: String = SourceRegistry.dropZoneID
 
     var title: String
     var artist: String
@@ -53,7 +59,9 @@ final class Track {
         playCount: Int = 0,
         lastPlayed: Date? = nil
     ) {
+        let split = AudioFile.split(trackPath: relativePath)
         self.relativePath = relativePath
+        self.sourceID = split.sourceID
         self.title = title
         self.artist = artist
         self.albumArtist = albumArtist
@@ -67,14 +75,23 @@ final class Track {
         self.fileSize = fileSize
         self.fileModified = fileModified
         self.dateAdded = dateAdded
-        self.folderPath = AudioFile.parentFolder(ofRelativePath: relativePath)
+        // Folder path is relative to the track's own source, so the browser can
+        // show a clean tree per folder rather than leaking the `@id` prefix.
+        self.folderPath = AudioFile.parentFolder(ofRelativePath: split.innerPath)
         self.playCount = playCount
         self.lastPlayed = lastPlayed
     }
 }
 
 extension Track {
-    var fileURL: URL { AudioFile.url(forRelativePath: relativePath) }
+    /// Nil when the track's folder cannot be reached — an unplugged drive, a
+    /// revoked permission, a folder the user deleted.
+    var fileURL: URL? { SourceRegistry.shared.url(forTrackPath: relativePath) }
+
+    /// Path within its own source, without the `@id` prefix.
+    var innerPath: String { AudioFile.split(trackPath: relativePath).innerPath }
+
+    var isFromDropZone: Bool { sourceID == SourceRegistry.dropZoneID }
 
     /// What to show when a track has no artist tag.
     var displayArtist: String { artist.isEmpty ? "Unknown Artist" : artist }

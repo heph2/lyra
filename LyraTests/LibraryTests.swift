@@ -116,11 +116,12 @@ struct LibraryGroupingTests {
             makeTrack("loose.mp3"),
         ]
 
-        let root = LibraryGrouping.folder(at: "", tracks: tracks)
+        let local = SourceRegistry.dropZoneID
+        let root = LibraryGrouping.folder(at: "", sourceID: local, tracks: tracks)
         #expect(root.subfolders == ["Rock"])
         #expect(root.tracks.count == 1)
 
-        let rock = LibraryGrouping.folder(at: "Rock", tracks: tracks)
+        let rock = LibraryGrouping.folder(at: "Rock", sourceID: local, tracks: tracks)
         #expect(rock.subfolders == ["Rock/Band", "Rock/Other"])
         #expect(rock.tracks.isEmpty)
     }
@@ -132,8 +133,86 @@ struct LibraryGroupingTests {
             makeTrack("Rock/Other/c.mp3"),
             makeTrack("Jazz/d.mp3"),
         ]
-        #expect(LibraryGrouping.tracksRecursively(under: "Rock", tracks: tracks).count == 2)
-        #expect(LibraryGrouping.tracksRecursively(under: "", tracks: tracks).count == 3)
+        let local = SourceRegistry.dropZoneID
+        #expect(LibraryGrouping.tracksRecursively(under: "Rock", sourceID: local, tracks: tracks).count == 2)
+        #expect(LibraryGrouping.tracksRecursively(under: "", sourceID: local, tracks: tracks).count == 3)
+    }
+
+    @Test("Folder browsing keeps sources apart")
+    func foldersAreScopedToTheirSource() {
+        let external = "11111111-2222-3333-4444-555555555555"
+        let tracks = [
+            makeTrack("Albums/One/a.mp3"),
+            makeTrack(AudioFile.trackPath(sourceID: external, innerPath: "Albums/One/b.mp3")),
+        ]
+
+        // Same folder name in two different sources must not merge.
+        let localRoot = LibraryGrouping.folder(at: "", sourceID: SourceRegistry.dropZoneID, tracks: tracks)
+        #expect(localRoot.subfolders == ["Albums"])
+        #expect(LibraryGrouping.tracksRecursively(
+            under: "Albums", sourceID: SourceRegistry.dropZoneID, tracks: tracks
+        ).count == 1)
+
+        #expect(LibraryGrouping.tracksRecursively(
+            under: "Albums", sourceID: external, tracks: tracks
+        ).count == 1)
+    }
+}
+
+@Suite("Source-qualified track paths")
+struct TrackPathTests {
+
+    @Test("Drop-zone paths stay bare, so old libraries keep working")
+    func dropZoneRoundTrip() {
+        let path = AudioFile.trackPath(
+            sourceID: SourceRegistry.dropZoneID,
+            innerPath: "Artist/Album/01 Song.mp3"
+        )
+        #expect(path == "Artist/Album/01 Song.mp3")
+
+        let split = AudioFile.split(trackPath: path)
+        #expect(split.sourceID == SourceRegistry.dropZoneID)
+        #expect(split.innerPath == "Artist/Album/01 Song.mp3")
+    }
+
+    @Test("External paths carry their source and round-trip")
+    func externalRoundTrip() {
+        let id = "11111111-2222-3333-4444-555555555555"
+        let path = AudioFile.trackPath(sourceID: id, innerPath: "Album/Song.flac")
+        #expect(path == "@\(id)/Album/Song.flac")
+
+        let split = AudioFile.split(trackPath: path)
+        #expect(split.sourceID == id)
+        #expect(split.innerPath == "Album/Song.flac")
+    }
+
+    @Test("Awkward characters in paths survive the round trip")
+    func trickyCharacters() {
+        let id = "abc-123"
+        for inner in [
+            "Sigur Rós/( )/01 Untitled #1.flac",
+            "AC⚡DC/Back in Black/song 100%.mp3",
+            "Someone's Album/what? maybe.m4a",
+            "Deeply/Nested/Set/Of/Folders/track.wav",
+        ] {
+            let split = AudioFile.split(trackPath: AudioFile.trackPath(sourceID: id, innerPath: inner))
+            #expect(split.sourceID == id, "failed for \(inner)")
+            #expect(split.innerPath == inner, "failed for \(inner)")
+        }
+    }
+
+    @Test("A track records which source it belongs to")
+    func trackDerivesItsSource() {
+        let id = "deadbeef"
+        let track = Track(
+            relativePath: AudioFile.trackPath(sourceID: id, innerPath: "Album/Song.flac"),
+            title: "Song"
+        )
+        #expect(track.sourceID == id)
+        #expect(track.innerPath == "Album/Song.flac")
+        // The @id prefix must not leak into the browsable folder tree.
+        #expect(track.folderPath == "Album")
+        #expect(!track.isFromDropZone)
     }
 }
 
