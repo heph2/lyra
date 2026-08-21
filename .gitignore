@@ -19,6 +19,11 @@ xcuserdata/
 ## macOS
 .DS_Store
 
+## Agent guidance is part of this project, so override the global ignore
+## (~/.config/git/ignore) that normally keeps these out of repositories.
+!AGENTS.md
+!CLAUDE.md
+
 ## Swift Package Manager
 .swiftpm/
 .build/
