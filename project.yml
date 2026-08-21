@@ -1,0 +1,69 @@
+name: Lyra
+
+options:
+  bundleIdPrefix: care.davinci
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Sideloaded via SideStore: never signed at build time.
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_STYLE: Manual
+
+targets:
+  Lyra:
+    type: application
+    platform: iOS
+    sources:
+      - path: Lyra
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: care.davinci.lyra
+        PRODUCT_NAME: Lyra
+        INFOPLIST_FILE: Lyra/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_PREVIEWS: YES
+
+  LyraTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: LyraTests
+    dependencies:
+      - target: Lyra
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: care.davinci.lyra.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Lyra:
+    build:
+      targets:
+        Lyra: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LyraTests
+    archive:
+      config: Release

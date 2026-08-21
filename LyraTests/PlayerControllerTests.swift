@@ -1,0 +1,213 @@
+import Foundation
+import SwiftData
+import Testing
+
+@testable import Lyra
+
+/// Stand-in for `AVPlayerEngine` so queue, shuffle and repeat behaviour can be
+/// tested without touching AVFoundation or an audio session.
+@MainActor
+final class FakeEngine: PlaybackEngine {
+    var onTrackFinished: (() -> Void)?
+    var onError: ((String) -> Void)?
+    var onTimeUpdate: ((Double) -> Void)?
+
+    private(set) var loadedURLs: [URL] = []
+    var isPlaying = false
+    var currentTime: Double = 0
+    var duration: Double = 200
+
+    func load(url: URL, autoplay: Bool) {
+        loadedURLs.append(url)
+        currentTime = 0
+        isPlaying = autoplay
+    }
+
+    func play() { isPlaying = true }
+    func pause() { isPlaying = false }
+    func seek(to seconds: Double) { currentTime = seconds }
+    func stop() { isPlaying = false; currentTime = 0 }
+
+    /// Simulates the current item reaching its end.
+    func finishTrack() { onTrackFinished?() }
+}
+
+@Suite("Playback queue")
+@MainActor
+struct PlayerControllerTests {
+
+    private func makeController() throws -> (PlayerController, FakeEngine) {
+        let schema = Schema([Track.self, Playlist.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        )
+        let engine = FakeEngine()
+        let controller = PlayerController(container: container, engine: engine)
+        // Persisted defaults must not leak between runs of the test suite.
+        controller.isShuffled = false
+        controller.repeatMode = .off
+        return (controller, engine)
+    }
+
+    private func tracks(_ count: Int) -> [Track] {
+        (1...count).map { Track(relativePath: "t\($0).mp3", title: "Track \($0)", duration: 200) }
+    }
+
+    @Test("Playing a list starts at the requested index")
+    func startsAtIndex() throws {
+        let (player, _) = try makeController()
+        let list = tracks(5)
+        player.play(tracks: list, startAt: 2)
+
+        #expect(player.currentTrack?.title == "Track 3")
+        #expect(player.isPlaying)
+        #expect(player.upcoming.map(\.title) == ["Track 4", "Track 5"])
+    }
+
+    @Test("A finished track advances to the next one")
+    func advancesOnFinish() throws {
+        let (player, engine) = try makeController()
+        player.play(tracks: tracks(3), startAt: 0)
+        engine.finishTrack()
+
+        #expect(player.currentTrack?.title == "Track 2")
+    }
+
+    @Test("Repeat off stops at the end instead of looping")
+    func stopsAtEnd() throws {
+        let (player, engine) = try makeController()
+        player.play(tracks: tracks(2), startAt: 1)
+        engine.finishTrack()
+
+        #expect(player.currentTrack?.title == "Track 2")
+        #expect(!player.isPlaying)
+    }
+
+    @Test("Repeat all wraps around")
+    func repeatAll() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(2), startAt: 1)
+        engine.finishTrack()
+
+        #expect(player.currentTrack?.title == "Track 1")
+        #expect(player.isPlaying)
+    }
+
+    @Test("Repeat one replays the same track, but Next still moves on")
+    func repeatOne() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .one
+        player.play(tracks: tracks(3), startAt: 0)
+
+        engine.finishTrack()
+        #expect(player.currentTrack?.title == "Track 1")
+
+        player.next()  // user-initiated overrides repeat-one
+        #expect(player.currentTrack?.title == "Track 2")
+    }
+
+    @Test("Previous restarts the track when past three seconds")
+    func previousRestarts() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(3), startAt: 1)
+        player.seek(to: 10)
+
+        player.previous()
+        #expect(player.currentTrack?.title == "Track 2")
+        #expect(player.currentTime == 0)
+
+        player.previous()  // now near the start, so step back
+        #expect(player.currentTrack?.title == "Track 1")
+    }
+
+    @Test("Shuffle keeps the current track and permutes the rest")
+    func shufflePreservesCurrent() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(6), startAt: 3)
+        let before = player.currentTrack?.title
+
+        player.isShuffled = true
+        #expect(player.currentTrack?.title == before)
+        #expect(player.upcoming.count == 5)
+        #expect(Set(player.upcoming.map(\.title)).count == 5)  // no duplicates
+    }
+
+    @Test("Turning shuffle off restores the original order")
+    func unshuffleRestoresOrder() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(5), startAt: 0)
+
+        player.isShuffled = true
+        player.isShuffled = false
+
+        #expect(player.currentTrack?.title == "Track 1")
+        #expect(player.upcoming.map(\.title) == ["Track 2", "Track 3", "Track 4", "Track 5"])
+    }
+
+    @Test("Play Next inserts directly after the current track")
+    func playNextInserts() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(3), startAt: 0)
+
+        let extra = Track(relativePath: "extra.mp3", title: "Jumped Queue", duration: 100)
+        player.playNext([extra])
+
+        #expect(player.upcoming.first?.title == "Jumped Queue")
+        #expect(player.upcoming.map(\.title) == ["Jumped Queue", "Track 2", "Track 3"])
+    }
+
+    @Test("Add to Queue appends to the end")
+    func addToQueueAppends() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(2), startAt: 0)
+
+        let extra = Track(relativePath: "extra.mp3", title: "Last", duration: 100)
+        player.addToQueue([extra])
+
+        #expect(player.upcoming.map(\.title) == ["Track 2", "Last"])
+    }
+
+    @Test("Upcoming tracks can be removed and reordered")
+    func queueEditing() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(4), startAt: 0)
+
+        player.removeUpcoming(at: IndexSet(integer: 0))   // drop Track 2
+        #expect(player.upcoming.map(\.title) == ["Track 3", "Track 4"])
+
+        player.moveUpcoming(fromOffsets: IndexSet(integer: 1), toOffset: 0)
+        #expect(player.upcoming.map(\.title) == ["Track 4", "Track 3"])
+    }
+
+    @Test("Tapping a queued track jumps straight to it")
+    func jumpToUpcoming() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(4), startAt: 0)
+
+        player.jumpToUpcoming(offset: 1)  // Track 3
+        #expect(player.currentTrack?.title == "Track 3")
+    }
+
+    @Test("An unplayable file skips forward rather than stalling the queue")
+    func errorSkipsTrack() throws {
+        let (player, engine) = try makeController()
+        player.play(tracks: tracks(3), startAt: 0)
+
+        engine.onError?("Corrupt file")
+        #expect(player.currentTrack?.title == "Track 2")
+    }
+
+    @Test("Seeking is clamped to the track length")
+    func seekClamping() throws {
+        let (player, _) = try makeController()
+        player.play(tracks: tracks(1), startAt: 0)
+
+        player.seek(to: -50)
+        #expect(player.currentTime == 0)
+
+        player.seek(to: 99_999)
+        #expect(player.currentTime == player.duration)
+    }
+}

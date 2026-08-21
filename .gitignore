@@ -1,0 +1,25 @@
+## XcodeGen output — regenerate with `xcodegen generate`
+Lyra.xcodeproj/
+*.xcworkspace/
+
+## Build artifacts
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+
+## macOS
+.DS_Store
+
+## Swift Package Manager
+.swiftpm/
+.build/
+Packages/
