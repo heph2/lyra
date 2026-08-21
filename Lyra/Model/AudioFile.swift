@@ -30,6 +30,47 @@ enum AudioFile {
         return url
     }
 
+    /// Makes the app visible under "On My iPhone" in the Files app.
+    ///
+    /// `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace` are not
+    /// enough on their own: iOS hides an app from the Files browser entirely
+    /// while its `Documents` directory is empty. That is a chicken-and-egg
+    /// problem for an app whose only import route *is* the Files app, so we
+    /// drop a short readme in to make the folder appear.
+    ///
+    /// Only ever written when the folder is empty, so it does not come back
+    /// once there is music in there.
+    static func prepareDropZone() {
+        let fileManager = FileManager.default
+        let root = documentsURL
+
+        let contents = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        guard contents?.isEmpty ?? true else { return }
+
+        let readme = """
+        Put your music in this folder.
+
+        Drag albums or whole folders in here from Finder or the Files app.
+        Any structure works, but Artist/Album/01 Title.mp3 is ideal — Lyra
+        falls back to the folder names when a file has no tags.
+
+        Supported: mp3, m4a, aac, alac, flac, wav, aiff, caf.
+
+        Open Lyra and pull down to refresh, or just relaunch it.
+        You can delete this file once you have added something.
+        """
+
+        try? readme.write(
+            to: root.appending(path: "Put your music here.txt", directoryHint: .notDirectory),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     static var artworkCacheURL: URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? URL.temporaryDirectory

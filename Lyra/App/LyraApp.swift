@@ -9,6 +9,10 @@ struct LyraApp: App {
     @State private var scanner: LibraryScanner
 
     init() {
+        // Before anything else: without this the app never shows up in the
+        // Files app, and there is no other way to get music in.
+        AudioFile.prepareDropZone()
+
         let container = Self.makeContainer()
         self.container = container
         _player = State(initialValue: PlayerController(container: container))

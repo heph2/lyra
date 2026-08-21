@@ -64,6 +64,10 @@ final class LibraryScanner {
             let live = try await store.liveArtworkHashes()
             ArtworkCache.shared.prune(keeping: live)
 
+            // If the user emptied the folder, put the readme back so the app
+            // does not silently vanish from the Files app.
+            AudioFile.prepareDropZone()
+
             lastScanDate = Date()
         } catch {
             lastError = error.localizedDescription
