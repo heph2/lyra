@@ -22,7 +22,7 @@ Distributed as an unsigned `.ipa` for **SideStore**. It is not on the App Store 
 
 ### Supported formats
 
-MP3, AAC/M4A, ALAC, FLAC, WAV, AIFF, CAF — everything AVFoundation decodes natively.
+MP3, AAC/M4A/M4B/MP4, ALAC, FLAC, WAV, AIFF/AIFC, CAF — everything AVFoundation decodes natively.
 
 Opus, Ogg Vorbis and WMA are **not** supported. Adding them means bundling FFmpeg, which would balloon the IPA and the build for formats that are rare in practice.
 
@@ -49,7 +49,23 @@ xcodebuild test -project Lyra.xcodeproj -scheme Lyra \
   -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
-Covers tag parsing, the FLAC header reader (against headers synthesised in the test, so no binary fixtures), library grouping, playlist ordering, and the full queue/shuffle/repeat state machine via a fake playback engine.
+Covers tag parsing, the FLAC header reader (against headers synthesised in the test, so no binary fixtures), library grouping, playlist ordering, the WebDAV client and its scan diff (against stubbed `URLProtocol` responses, so no server), offline download bookkeeping, and the full queue/shuffle/repeat state machine via a fake playback engine.
+
+### End-to-end UI tests
+
+A separate `LyraUITests` scheme drives the real app in the simulator, so the
+`Lyra` scheme above stays unit-tests-only:
+
+```bash
+bash scripts/uitest/run-ui-tests.sh
+```
+
+It generates tagged audio, serves a "remote" library from a local mock WebDAV
+server, and walks the real flows: indexing a dropped folder, browsing, adding
+a WebDAV library, rejecting bad credentials, keeping an album offline, removing
+it again, and playing a downloaded track with the server stopped. Screenshots
+land in `build/uitest-evidence/`, and the server's byte log makes partial
+indexing versus a full download measurable.
 
 ---
 
@@ -60,10 +76,10 @@ Covers tag parsing, the FLAC header reader (against headers synthesised in the t
 Tagged GitHub releases publish an unsigned IPA and a SideStore source. After the first release, add this URL to SideStore once:
 
 ```text
-https://github.com/OWNER/REPO/releases/latest/download/source.json
+https://github.com/heph2/lyra/releases/latest/download/source.json
 ```
 
-Replace `OWNER/REPO` with this repository's GitHub location. SideStore will then discover later tagged Lyra versions from the same source and can download and sign updates itself. The repository and its release assets must be publicly downloadable because SideStore cannot authenticate to a private GitHub repository.
+SideStore will then discover later tagged Lyra versions from the same source and can download and sign updates itself. The repository and its release assets must be publicly downloadable because SideStore cannot authenticate to a private GitHub repository. If you publish your own fork, substitute your `owner/repo` — the workflow builds the URL from `GITHUB_REPOSITORY` and prints it in the release job's summary.
 
 SideStore still has to refresh apps within the free Apple ID's seven-day signing window. The source removes the manual IPA transfer step; it does not remove Apple's signing limit.
 
@@ -72,6 +88,8 @@ SideStore still has to refresh apps within the free Apple ID's seven-day signing
 ```bash
 ./scripts/build-ipa.sh           # → build/Lyra.ipa
 ```
+
+`RELEASE_VERSION` (a semantic version) and `BUILD_NUMBER` (digits) override what is stamped into the archive; CI sets both from the tag and the run number. Without them the values in `project.yml` are used.
 
 The IPA is **unsigned on purpose**. SideStore signs it with your own free Apple ID when it installs it, so no paid Apple Developer account is involved.
 
@@ -107,7 +125,7 @@ Each release tag must increase the semantic version. SideStore compares `CFBundl
 
 ## Diagnostics
 
-Lyra writes privacy-safe unified logs for app startup, library scans, WebDAV response status and byte counts, offline downloads, and playback failures. Logs deliberately exclude credentials, server URLs, source names, and track paths. Use macOS Console with the connected iPhone selected and filter for a subsystem beginning with `care.davinci.lyra`; SideStore may append its signing-team suffix to the installed bundle identifier.
+Lyra writes privacy-safe unified logs for app startup, library scans, WebDAV response status and byte counts, offline downloads, and playback failures, under the categories `app`, `library`, `webdav`, `offline` and `playback`. Logs deliberately exclude credentials, server URLs, source names, and track paths — failures are recorded as an error domain and code. Use macOS Console with the connected iPhone selected and filter for a subsystem beginning with `care.davinci.lyra`; SideStore may append its signing-team suffix to the installed bundle identifier.
 
 ---
 
@@ -133,11 +151,15 @@ scripts/build-ipa.sh     unsigned archive → build/Lyra.ipa
 scripts/make-sidestore-source.swift  release metadata → source.json
 lyra-logo.png            source artwork for the app icon
 scripts/make-icon.swift  lyra-logo.png -> AppIcon.png (swift scripts/make-icon.swift)
+scripts/uitest/          UI-test harness: media generator, mock WebDAV server, runner
+.github/workflows/       ipa.yml — test, package, publish the SideStore source
 Lyra/App/                app entry point, tab shell
 Lyra/Diagnostics/        privacy-safe unified logging categories
-Lyra/Model/              Track, Playlist, scanning, grouping
+Lyra/Model/              Track, Playlist, library sources, WebDAV client,
+                         Keychain store, offline sync, scanning, grouping
 Lyra/Metadata/           tag reading, FLAC parser, artwork cache
 Lyra/Playback/           engine, audio session, Now Playing, queue controller
 Lyra/UI/                 SwiftUI views
 LyraTests/               Swift Testing suites
+LyraUITests/             XCUITest end-to-end suite (its own scheme)
 ```

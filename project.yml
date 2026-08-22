@@ -42,6 +42,19 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ENABLE_PREVIEWS: YES
 
+  LyraUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: LyraUITests
+    dependencies:
+      - target: Lyra
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: care.davinci.lyra.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Lyra
+
   LyraTests:
     type: bundle.unit-test
     platform: iOS
@@ -67,3 +80,15 @@ schemes:
         - LyraTests
     archive:
       config: Release
+
+  LyraUITests:
+    build:
+      targets:
+        Lyra: all
+        LyraUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LyraUITests

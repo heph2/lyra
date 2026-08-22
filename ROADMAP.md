@@ -10,7 +10,7 @@ Shipped in `005edfb`. Native folder picker, security-scoped bookmarks refreshed 
 
 Two behaviours worth remembering: track identity is source-qualified so old libraries migrate without a schema change, and an unreachable source is held back from removals so unplugging a drive does not wipe the index.
 
-**Still unverified on device:** the document picker and the Music Folders sheet. The simulator harness cannot drive them. Confirm before building on top.
+**Still unverified on device:** the document picker behind **Add Library → Local Folder**. `LyraUITests` now drives the Library Sources sheet itself, but not the system picker it presents. Confirm before building on top.
 
 ---
 
@@ -38,7 +38,9 @@ protocol LibrarySource {
 }
 
 protocol RemoteLibrarySource: LibrarySource {
-    func metadataHeader(for item: ScannedFile) async throws -> Data   // ranged read
+    // Ranged read. `maxBytes` is the caller's budget: indexing a remote library
+    // means paying for every byte, so the scanner asks for the smallest prefix.
+    func metadataHeader(for item: ScannedFile, maxBytes: Int) async throws -> Data
     func download(_ item: ScannedFile, to destination: URL) async throws
 }
 ```
@@ -122,7 +124,7 @@ The protocol and scan logic have unit coverage against stubbed `URLProtocol` res
 
 Selective track and album downloads are implemented. Copies are file-backed under `Application Support/Libraries/<library-id>/Music/`, preserve relative paths, use atomic replacement, and remain selected across rescans so modified remote files are downloaded again.
 
-Track state: `availableRemote` · `downloading` · `availableOffline` · `modifiedRemote` · `unavailable`. Shown as `☁ / ↓ / ✓`.
+Track state: `availableRemote` · `downloading` · `availableOffline` · `modifiedRemote` · `unavailable`. Shown in the track row as a cloud, a spinner, a green filled checkmark, a refresh arrow, and a warning triangle — each with its own accessibility label.
 
 The remaining transfer work is background `URLSession` support so an in-progress download can survive suspension. Current downloads are file-backed and bounded to three concurrent transfers, but run in the app's foreground session.
 
