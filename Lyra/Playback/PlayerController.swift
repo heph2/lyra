@@ -123,6 +123,7 @@ final class PlayerController {
     /// `tracks` as given, regardless of shuffle).
     func play(tracks: [Track], startAt index: Int = 0) {
         guard !tracks.isEmpty, tracks.indices.contains(index) else { return }
+        LyraLog.playback.info("Loading playback queue tracks=\(tracks.count)")
 
         queue = tracks
         order = Array(tracks.indices)
@@ -316,12 +317,14 @@ final class PlayerController {
         // plus repeat-all would spin forever.
         guard let url = track.fileURL else {
             if LibraryManager.shared.source(for: track.sourceID)?.isRemote == true {
+                LyraLog.playback.notice("Playback blocked because remote track is not offline")
                 errorMessage = "\(track.title) has not been downloaded yet. "
                     + "Long-press it and choose Download Offline to play it."
                 finishQueue()
                 return
             }
             consecutiveLoadFailures += 1
+            LyraLog.playback.notice("Playback skipped unreachable local track")
             guard consecutiveLoadFailures <= order.count else {
                 consecutiveLoadFailures = 0
                 errorMessage = "None of these tracks are in a folder Lyra can reach right now."
@@ -414,6 +417,7 @@ final class PlayerController {
 
         engine.onError = { [weak self] message in
             guard let self else { return }
+            LyraLog.playback.error("Playback engine reported a track error")
             self.errorMessage = message
             // A single corrupt file should not stall the whole queue.
             self.next(userInitiated: false)

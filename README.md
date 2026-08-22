@@ -1,8 +1,8 @@
 # Lyra
 
-An offline iOS music player. No accounts, no subscriptions, no cloud, no telemetry.
+An offline-first iOS music player. No accounts, no subscriptions, no cloud, no telemetry.
 
-Drop your music into the app's folder with the Files app and it plays — background audio, lock-screen controls, artwork, playlists, search. That is the whole product.
+Use music from Lyra's Files folder, another local folder, or a WebDAV library. Remote tracks are indexed without being downloaded, and only the tracks or albums selected for offline use consume device storage.
 
 Distributed as an unsigned `.ipa` for **SideStore**. It is not on the App Store and is not built to be.
 
@@ -11,12 +11,14 @@ Distributed as an unsigned `.ipa` for **SideStore**. It is not on the App Store 
 ## What it does
 
 - **Folder drop-in import.** "On My iPhone → Lyra" in the Files app. Drag folders in from Finder or Files; Lyra picks them up on next launch or pull-to-refresh.
+- **External folder libraries.** Index a folder chosen from the document picker without copying or moving its files.
+- **WebDAV libraries.** Browse a remote library and selectively download tracks or albums for offline playback.
 - **Browse by** songs, albums, artists, or the actual folder tree on disk.
 - **Playback** with queue, shuffle, repeat (off / all / one), and a reorderable up-next list.
 - **Background audio** that survives locking the screen, with full lock-screen and Bluetooth transport controls.
 - **Playlists** — create, rename, reorder, delete.
 - **Search** across title, artist, album and genre, accent- and case-insensitive.
-- **Zero network code.** No `URLSession` anywhere in the project. Airplane Mode changes nothing.
+- **Network access is isolated to WebDAV.** Local and downloaded music works in Airplane Mode. Lyra has no analytics or backend.
 
 ### Supported formats
 
@@ -53,6 +55,20 @@ Covers tag parsing, the FLAC header reader (against headers synthesised in the t
 
 ## Installing on your iPhone
 
+### SideStore source
+
+Tagged GitHub releases publish an unsigned IPA and a SideStore source. After the first release, add this URL to SideStore once:
+
+```text
+https://github.com/OWNER/REPO/releases/latest/download/source.json
+```
+
+Replace `OWNER/REPO` with this repository's GitHub location. SideStore will then discover later tagged Lyra versions from the same source and can download and sign updates itself. The repository and its release assets must be publicly downloadable because SideStore cannot authenticate to a private GitHub repository.
+
+SideStore still has to refresh apps within the free Apple ID's seven-day signing window. The source removes the manual IPA transfer step; it does not remove Apple's signing limit.
+
+### Manual IPA
+
 ```bash
 ./scripts/build-ipa.sh           # → build/Lyra.ipa
 ```
@@ -65,15 +81,39 @@ The IPA is **unsigned on purpose**. SideStore signs it with your own free Apple 
 
 ### Getting music in
 
-Files app → **On My iPhone** → **Lyra** → drop folders in. Or connect the phone to a Mac and use Finder's Files tab.
+Files app → **On My iPhone** → **Lyra** → drop folders in. Or open **Library Sources** in Lyra to select another local folder or add a WebDAV server.
 
 Any folder structure works. `Artist/Album/01 Title.flac` is ideal, because Lyra falls back to the path when a file has no tags.
+
+WebDAV downloads live in Lyra's private container under `Application Support/Libraries/<library-id>/Music/`, preserving the remote folder structure. They do not appear in the Files drop zone. Removing an offline download or its WebDAV source removes Lyra's managed copy; it never changes the server's file.
+
+## Releases and CI
+
+[`.github/workflows/ipa.yml`](.github/workflows/ipa.yml) tests and packages every push and pull request on a macOS 26 runner. A semantic-version tag such as `v1.1.0` additionally creates or updates a GitHub Release containing:
+
+- `Lyra.ipa` — unsigned, ready for SideStore to sign
+- `Lyra.dSYMs.zip` — symbols for device crash reports
+- `source.json` — the stable SideStore update source
+- `icon.png` — artwork referenced by the source
+
+Create a release by pushing a new version tag:
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
+```
+
+Each release tag must increase the semantic version. SideStore compares `CFBundleShortVersionString`, not only the internal build number, when deciding whether an update exists.
+
+## Diagnostics
+
+Lyra writes privacy-safe unified logs for app startup, library scans, WebDAV response status and byte counts, offline downloads, and playback failures. Logs deliberately exclude credentials, server URLs, source names, and track paths. Use macOS Console with the connected iPhone selected and filter for a subsystem beginning with `care.davinci.lyra`; SideStore may append its signing-team suffix to the installed bundle identifier.
 
 ---
 
 ## Notes on the design
 
-**Track identity is the path relative to `Documents/`, never an absolute URL.** The app container's UUID changes on every reinstall, so persisted absolute URLs break. Relative paths mean your play counts and playlists survive a reinstall.
+**Track identity is a source-qualified relative path, never an absolute URL.** The app container's UUID changes on every reinstall, so persisted absolute URLs break. Relative paths keep local and remote source identities stable.
 
 **The library database lives in Application Support, not `Documents/`.** `Documents/` is your drop zone and is visible in the Files app; it should contain your music and nothing else.
 
@@ -90,9 +130,11 @@ Any folder structure works. `Artist/Album/01 Title.flac` is ideal, because Lyra 
 ```
 project.yml              XcodeGen spec — the source of truth for the project
 scripts/build-ipa.sh     unsigned archive → build/Lyra.ipa
+scripts/make-sidestore-source.swift  release metadata → source.json
 lyra-logo.png            source artwork for the app icon
 scripts/make-icon.swift  lyra-logo.png -> AppIcon.png (swift scripts/make-icon.swift)
 Lyra/App/                app entry point, tab shell
+Lyra/Diagnostics/        privacy-safe unified logging categories
 Lyra/Model/              Track, Playlist, scanning, grouping
 Lyra/Metadata/           tag reading, FLAC parser, artwork cache
 Lyra/Playback/           engine, audio session, Now Playing, queue controller

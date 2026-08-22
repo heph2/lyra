@@ -51,8 +51,10 @@ final class LibraryScanner {
     func scan() async {
         guard !isScanning else {
             rescanRequested = true
+            LyraLog.library.debug("Queued one follow-up scan")
             return
         }
+        LyraLog.library.info("Library scan started")
         isScanning = true
         lastError = nil
         processed = 0
@@ -71,6 +73,9 @@ final class LibraryScanner {
 
         do {
             let plan = try await store.planScan()
+            LyraLog.library.info(
+                "Scan plan total=\(plan.totalOnDisk) added=\(plan.added.count) modified=\(plan.modified.count) removed=\(plan.removedPaths.count) sourceErrors=\(plan.sourceErrors.count)"
+            )
 
             if !plan.removedPaths.isEmpty {
                 let removed = try await store.remove(paths: plan.removedPaths)
@@ -102,8 +107,13 @@ final class LibraryScanner {
 
             await offlineSync.reconcile()
             lastScanDate = Date()
+            LyraLog.library.info(
+                "Library scan completed processed=\(self.processed) total=\(self.total)"
+            )
         } catch {
             lastError = error.localizedDescription
+            let code = DiagnosticValue.errorCode(error)
+            LyraLog.library.error("Library scan failed error=\(code, privacy: .public)")
         }
     }
 
@@ -112,10 +122,13 @@ final class LibraryScanner {
     /// Adds folders picked in the document importer and rescans.
     func addFolders(_ urls: [URL]) {
         var added = false
+        var addedCount = 0
         for url in urls where LibraryManager.shared.add(folder: url) != nil {
             added = true
+            addedCount += 1
         }
         guard added else { return }
+        LyraLog.library.info("Added \(addedCount) local sources")
         scanInBackground()
     }
 
@@ -131,8 +144,11 @@ final class LibraryScanner {
                 OfflineLibrary.removeLibrary(sourceID: sourceID)
             }
             inventory = LibraryManager.shared.inventory()
+            LyraLog.library.info("Removed library source remote=\(wasRemote)")
         } catch {
             lastError = error.localizedDescription
+            let code = DiagnosticValue.errorCode(error)
+            LyraLog.library.error("Removing library source failed error=\(code, privacy: .public)")
         }
     }
 
@@ -155,6 +171,7 @@ final class LibraryScanner {
             username: username,
             password: password
         )
+        LyraLog.library.info("Added WebDAV source")
         scanInBackground()
         return added.warning
     }

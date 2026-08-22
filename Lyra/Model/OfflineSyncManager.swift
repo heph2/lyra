@@ -96,6 +96,7 @@ final class OfflineSyncManager {
     func download(_ tracks: [Track]) {
         let paths = Set(tracks.filter(isRemote).map(\.relativePath))
         guard !paths.isEmpty else { return }
+        LyraLog.offline.info("Offline selection requested tracks=\(paths.count)")
 
         Task {
             let store = LibraryStore(modelContainer: container)
@@ -103,6 +104,8 @@ final class OfflineSyncManager {
                 enqueue(try await store.prepareOfflineDownloads(paths: Array(paths)))
             } catch {
                 lastError = error.localizedDescription
+                let code = DiagnosticValue.errorCode(error)
+                LyraLog.offline.error("Preparing offline downloads failed error=\(code, privacy: .public)")
             }
         }
     }
@@ -110,6 +113,7 @@ final class OfflineSyncManager {
     func removeOfflineCopies(_ tracks: [Track]) {
         let paths = Set(tracks.filter(isRemote).map(\.relativePath))
         guard !paths.isEmpty else { return }
+        LyraLog.offline.info("Offline copies removal requested tracks=\(paths.count)")
 
         for path in paths {
             active.removeValue(forKey: path)?.cancel()
@@ -126,6 +130,8 @@ final class OfflineSyncManager {
                 }
             } catch {
                 lastError = error.localizedDescription
+                let code = DiagnosticValue.errorCode(error)
+                LyraLog.offline.error("Removing offline copies failed error=\(code, privacy: .public)")
             }
         }
     }
@@ -135,9 +141,13 @@ final class OfflineSyncManager {
     func reconcile() async {
         let store = LibraryStore(modelContainer: container)
         do {
-            enqueue(try await store.pendingOfflineDownloads())
+            let requests = try await store.pendingOfflineDownloads()
+            LyraLog.offline.info("Offline reconciliation found pending=\(requests.count)")
+            enqueue(requests)
         } catch {
             lastError = error.localizedDescription
+            let code = DiagnosticValue.errorCode(error)
+            LyraLog.offline.error("Offline reconciliation failed error=\(code, privacy: .public)")
         }
     }
 
@@ -147,7 +157,9 @@ final class OfflineSyncManager {
 
     private func enqueue(_ requests: [OfflineDownloadRequest]) {
         let known = Set(pending.map(\.relativePath)).union(active.keys)
-        pending.append(contentsOf: requests.filter { !known.contains($0.relativePath) })
+        let additions = requests.filter { !known.contains($0.relativePath) }
+        pending.append(contentsOf: additions)
+        LyraLog.offline.debug("Offline queue added=\(additions.count) pending=\(self.pending.count)")
         startPendingDownloads()
     }
 
@@ -184,9 +196,12 @@ final class OfflineSyncManager {
             switch result {
             case .success:
                 try? await store.completeOfflineDownload(path: request.relativePath)
+                LyraLog.offline.info("Offline download completed remaining=\(self.pending.count)")
             case .failure(let error):
                 if !(error is CancellationError) {
                     lastError = error.localizedDescription
+                    let code = DiagnosticValue.errorCode(error)
+                    LyraLog.offline.error("Offline download failed error=\(code, privacy: .public)")
                 }
                 try? await store.failOfflineDownload(path: request.relativePath)
             }

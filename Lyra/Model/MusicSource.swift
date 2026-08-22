@@ -322,6 +322,7 @@ final class LibraryManager: @unchecked Sendable {
     func scan() async -> LibraryScanResult {
         let configurations = allSources
         var result = LibraryScanResult()
+        LyraLog.library.info("Starting source inventory for \(configurations.count) sources")
 
         // Source scans stay sequential. Both TaskGroup and explicitly owned
         // child tasks have produced reproducible Swift runtime memory faults on
@@ -332,14 +333,24 @@ final class LibraryManager: @unchecked Sendable {
                 let files = try await source.scan()
                 result.files.append(contentsOf: files)
                 setAvailability(.init(isReachable: true, detail: nil), for: configuration.id)
+                LyraLog.library.info(
+                    "Source inventory completed type=\(configuration.kind.rawValue, privacy: .public) files=\(files.count)"
+                )
             } catch {
                 result.unavailableSourceIDs.insert(configuration.id)
                 let description = (error as? any LocalizedError)?.errorDescription ?? error.localizedDescription
                 result.errors.append("\(configuration.displayName): \(description)")
                 setAvailability(.init(isReachable: false, detail: description), for: configuration.id)
+                let code = DiagnosticValue.errorCode(error)
+                LyraLog.library.error(
+                    "Source inventory failed type=\(configuration.kind.rawValue, privacy: .public) error=\(code, privacy: .public)"
+                )
             }
         }
 
+        LyraLog.library.info(
+            "Source inventory finished files=\(result.files.count) unavailable=\(result.unavailableSourceIDs.count)"
+        )
         return result
     }
 

@@ -23,6 +23,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         var pending = [rootURL]
         var visited = Set<String>()
         var files: [ScannedFile] = []
+        LyraLog.webDAV.info("WebDAV inventory started")
 
         while let directory = pending.popLast() {
             let key = directory.absoluteString
@@ -43,6 +44,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
                 }
             }
         }
+        LyraLog.webDAV.info("WebDAV inventory completed directories=\(visited.count) files=\(files.count)")
         return files
     }
 
@@ -53,6 +55,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
 
         let (data, response) = try await requestData(request)
         guard let http = response as? HTTPURLResponse else { throw LibrarySourceError.unavailable }
+        LyraLog.webDAV.debug("Metadata range response status=\(http.statusCode) bytes=\(data.count)")
         if http.statusCode == 401 { throw LibrarySourceError.signInRequired }
         if http.statusCode == 206 { return data }
         guard (200...299).contains(http.statusCode) else {
@@ -66,9 +69,11 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     }
 
     func download(_ item: ScannedFile, to destination: URL) async throws {
+        LyraLog.webDAV.info("WebDAV download started")
         let request = try authenticatedRequest(url: try url(for: item), method: "GET")
         let (temporaryURL, response) = try await session.download(for: request)
         guard let http = response as? HTTPURLResponse else { throw LibrarySourceError.unavailable }
+        LyraLog.webDAV.debug("WebDAV download response status=\(http.statusCode)")
         if http.statusCode == 401 { throw LibrarySourceError.signInRequired }
         guard (200...299).contains(http.statusCode) else { throw LibrarySourceError.server(status: http.statusCode) }
 
@@ -81,6 +86,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         } else {
             try FileManager.default.moveItem(at: replacement, to: destination)
         }
+        LyraLog.webDAV.info("WebDAV download completed")
     }
 
     private func propfind(_ directory: URL) async throws -> [WebDAVResponse] {
@@ -94,6 +100,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
 
         let (data, response) = try await requestData(request)
         guard let http = response as? HTTPURLResponse else { throw LibrarySourceError.unavailable }
+        LyraLog.webDAV.debug("PROPFIND response status=\(http.statusCode) bytes=\(data.count)")
         if http.statusCode == 401 { throw LibrarySourceError.signInRequired }
         guard http.statusCode == 207 else {
             if (200...299).contains(http.statusCode) { throw LibrarySourceError.notWebDAVServer }
@@ -102,6 +109,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         guard let responses = WebDAVMultistatusParser.parse(data) else {
             throw LibrarySourceError.notWebDAVServer
         }
+        LyraLog.webDAV.debug("PROPFIND parsed entries=\(responses.count)")
         return responses
     }
 
@@ -121,6 +129,8 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         do {
             return try await session.data(for: request)
         } catch {
+            let code = DiagnosticValue.errorCode(error)
+            LyraLog.webDAV.error("WebDAV request failed error=\(code, privacy: .public)")
             throw LibrarySourceError.unavailable
         }
     }

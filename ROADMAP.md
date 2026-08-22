@@ -14,7 +14,7 @@ Two behaviours worth remembering: track identity is source-qualified so old libr
 
 ---
 
-## Phase 2 — WebDAV libraries
+## Phase 2 — WebDAV libraries · implemented, device verification pending
 
 Add a remote source type so a folder on a PC, Mac, or NAS can back the library.
 
@@ -110,27 +110,29 @@ Fixtures should cover: nested directories; spaces, Unicode, apostrophes, `#`, `%
 
 Plus diff cases against the index — added, removed, modified, unchanged — which are already covered for local sources and should pass unchanged through `WebDAVSource`.
 
-### Done when
+### Current status
 
-A WebDAV library can be added, tested, scanned, and diffed, and its tracks appear in the library as remote-only. No downloading yet.
+A WebDAV library can be added, tested, recursively scanned, and diffed. Remote tracks are written to the library immediately from the inventory while bounded ranged reads enrich their metadata. Credentials are stored in the Keychain and source failures are held back from removals.
+
+The protocol and scan logic have unit coverage against stubbed `URLProtocol` responses and a real server has returned the expected nested inventory. Physical-device launch and full-library indexing remain the release gate after concurrent source enumeration exposed Swift runtime crashes; source scans are now deliberately sequential.
 
 ---
 
-## Phase 3 — Offline sync
+## Phase 3 — Offline sync · in progress
 
-Sketch only; detail it when Phase 2 is sound.
+Selective track and album downloads are implemented. Copies are file-backed under `Application Support/Libraries/<library-id>/Music/`, preserve relative paths, use atomic replacement, and remain selected across rescans so modified remote files are downloaded again.
 
 Track state: `availableRemote` · `downloading` · `availableOffline` · `modifiedRemote` · `unavailable`. Shown as `☁ / ↓ / ✓`.
 
-Downloads into `Application Support/Libraries/<library-id>/Music/`, preserving relative paths. `URLSession` background download tasks, file-backed so nothing large lands in RAM, atomic replace so a failed download never corrupts a playable copy, cancellable, 2–4 concurrent with the limit configurable later. A modified remote file re-downloads only if it was being kept offline.
+The remaining transfer work is background `URLSession` support so an in-progress download can survive suspension. Current downloads are file-backed and bounded to three concurrent transfers, but run in the app's foreground session.
 
 Playback resolves to the local copy when present. Streaming is explicitly **not** a goal — only add it if it falls out for free.
 
 ---
 
-## Phase 4 — Polish
+## Phase 4 — Polish · started
 
-Sync status UI, automatic rescan when it is actually useful, artwork cache improvements, better errors, background-transfer handling, library management.
+Privacy-safe unified logging now covers launch, scans, WebDAV operations, offline transfers, and playback failures. Tagged CI releases build the unsigned IPA, retain dSYMs, and publish a SideStore update source. Remaining work: sync status polish, automatic rescan when it is actually useful, artwork cache improvements, better errors, background-transfer handling, and library management.
 
 ---
 

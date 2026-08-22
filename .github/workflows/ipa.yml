@@ -1,0 +1,132 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and package
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          xcodegen --version
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Run tests
+        run: |
+          xcodebuild test \
+            -project Lyra.xcodeproj \
+            -scheme Lyra \
+            -destination 'platform=iOS Simulator,name=iPhone 16e' \
+            -derivedDataPath "$RUNNER_TEMP/LyraDerivedData" \
+            -quiet
+
+      - name: Build unsigned IPA
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Tag must be a semantic version such as v1.2.0" >&2
+              exit 1
+            fi
+            RELEASE_VERSION="$version" BUILD_NUMBER="$GITHUB_RUN_NUMBER" ./scripts/build-ipa.sh
+          else
+            BUILD_NUMBER="$GITHUB_RUN_NUMBER" ./scripts/build-ipa.sh
+          fi
+
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            build/Lyra.xcarchive/Products/Applications/Lyra.app/Info.plist)
+          build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+            build/Lyra.xcarchive/Products/Applications/Lyra.app/Info.plist)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build artifacts
+        run: |
+          mkdir -p release
+          cp build/Lyra.ipa release/Lyra.ipa
+          ditto -c -k --keepParent \
+            build/Lyra.xcarchive/dSYMs/Lyra.app.dSYM \
+            release/Lyra.dSYMs.zip
+
+      - name: Generate SideStore source
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          swift scripts/make-sidestore-source.swift \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --version "$RELEASE_VERSION" \
+            --date "$(date -u +%F)" \
+            --ipa release/Lyra.ipa \
+            --output release/source.json
+          cp lyra-logo.png release/icon.png
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lyra-${{ steps.package.outputs.version }}-${{ steps.package.outputs.build_number }}
+          path: release/
+          if-no-files-found: error
+
+  release:
+    name: Publish SideStore release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          assets=(release/Lyra.ipa release/Lyra.dSYMs.zip release/source.json release/icon.png)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "Lyra ${GITHUB_REF_NAME#v}"
+          fi
+
+      - name: Publish source URL
+        run: |
+          echo "### SideStore source" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/source.json" \
+            >> "$GITHUB_STEP_SUMMARY"

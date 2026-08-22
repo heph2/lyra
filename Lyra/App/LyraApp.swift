@@ -10,6 +10,10 @@ struct LyraApp: App {
     @State private var offlineSync: OfflineSyncManager
 
     init() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        LyraLog.app.info("Launching Lyra version \(version, privacy: .public) build \(build, privacy: .public)")
+
         // Before anything else: without this the app never shows up in the
         // Files app, and there is no other way to get music in.
         AudioFile.prepareDropZone()
@@ -56,14 +60,20 @@ struct LyraApp: App {
                 schema: schema,
                 url: base.appending(path: "Lyra.store", directoryHint: .notDirectory)
             )
-            return try ModelContainer(for: schema, configurations: configuration)
+            let container = try ModelContainer(for: schema, configurations: configuration)
+            LyraLog.app.info("Opened persistent library store")
+            return container
         } catch {
+            let code = DiagnosticValue.errorCode(error)
+            LyraLog.app.error("Persistent library store failed with \(code, privacy: .public); using memory")
             do {
                 return try ModelContainer(
                     for: schema,
                     configurations: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
                 )
             } catch {
+                let code = DiagnosticValue.errorCode(error)
+                LyraLog.app.fault("In-memory library store failed with \(code, privacy: .public)")
                 fatalError("Could not create even an in-memory model container: \(error)")
             }
         }

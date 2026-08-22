@@ -13,6 +13,8 @@ cd "$(dirname "$0")/.."
 
 SCHEME="Lyra"
 CONFIGURATION="${CONFIGURATION:-Release}"
+RELEASE_VERSION="${RELEASE_VERSION:-}"
+BUILD_NUMBER="${BUILD_NUMBER:-}"
 BUILD_DIR="build"
 ARCHIVE_PATH="${BUILD_DIR}/Lyra.xcarchive"
 IPA_PATH="${BUILD_DIR}/Lyra.ipa"
@@ -21,17 +23,30 @@ log() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 command -v xcodebuild >/dev/null || die "xcodebuild not found — install Xcode."
+command -v xcodegen >/dev/null || die "xcodegen not found — install it with brew install xcodegen."
 
-if [[ ! -d "Lyra.xcodeproj" ]]; then
-  command -v xcodegen >/dev/null || die "Lyra.xcodeproj is missing and xcodegen is not installed (brew install xcodegen)."
-  log "Generating Lyra.xcodeproj"
-  xcodegen generate
+if [[ -n "${RELEASE_VERSION}" && ! "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  die "RELEASE_VERSION must be a semantic version such as 1.2.0."
 fi
+if [[ -n "${BUILD_NUMBER}" && ! "${BUILD_NUMBER}" =~ ^[0-9]+$ ]]; then
+  die "BUILD_NUMBER must contain digits only."
+fi
+
+# The project is generated and gitignored. Always regenerate so a stale local
+# project cannot silently package old version or file-list settings.
+log "Generating Lyra.xcodeproj"
+xcodegen generate
+
+BUILD_SETTINGS=()
+[[ -n "${RELEASE_VERSION}" ]] && BUILD_SETTINGS+=("MARKETING_VERSION=${RELEASE_VERSION}")
+[[ -n "${BUILD_NUMBER}" ]] && BUILD_SETTINGS+=("CURRENT_PROJECT_VERSION=${BUILD_NUMBER}")
 
 log "Archiving (${CONFIGURATION}, unsigned)"
 rm -rf "${ARCHIVE_PATH}"
 mkdir -p "${BUILD_DIR}"
 
+BUILD_LOG="${BUILD_DIR}/archive.log"
+set +e
 xcodebuild archive \
   -project Lyra.xcodeproj \
   -scheme "${SCHEME}" \
@@ -42,7 +57,15 @@ xcodebuild archive \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
   CODE_SIGN_ENTITLEMENTS="" \
-  | grep -E '^(\*\*|error:|warning: )' || true
+  "${BUILD_SETTINGS[@]}" \
+  2>&1 | tee "${BUILD_LOG}" | grep -E '^(\*\*|error:|warning: )'
+XCODE_STATUS="${PIPESTATUS[0]}"
+set -e
+
+if [[ "${XCODE_STATUS}" -ne 0 ]]; then
+  tail -n 100 "${BUILD_LOG}" >&2
+  die "xcodebuild archive failed with status ${XCODE_STATUS}."
+fi
 
 APP_PATH="${ARCHIVE_PATH}/Products/Applications/Lyra.app"
 [[ -d "${APP_PATH}" ]] || die "Archive did not produce ${APP_PATH}"
