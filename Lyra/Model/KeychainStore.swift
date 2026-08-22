@@ -54,6 +54,14 @@ enum KeychainStore {
         }
     }
 
+    /// A Keychain that refuses to answer at all cannot be holding a secret we
+    /// wrote — a re-signed build gets `errSecMissingEntitlement` for every
+    /// call, including the earlier `setPassword`. Treating that as "nothing to
+    /// delete" is what keeps a library removable there.
+    private static let unavailableStatuses: Set<OSStatus> = [
+        errSecMissingEntitlement, errSecNotAvailable, errSecInteractionNotAllowed,
+    ]
+
     static func deletePassword(for libraryID: String) throws {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
@@ -61,7 +69,9 @@ enum KeychainStore {
             kSecAttrAccount: libraryID,
         ]
         let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
+        guard status == errSecSuccess || status == errSecItemNotFound
+            || unavailableStatuses.contains(status)
+        else {
             throw KeychainError(status: status)
         }
     }

@@ -80,8 +80,9 @@ final class AVPlayerEngine: PlaybackEngine {
         let item = AVPlayerItem(asset: asset)
 
         loadedDuration = 0
+        loadToken += 1
         observeEnd(of: item)
-        observeStatus(of: item)
+        observeStatus(of: item, token: loadToken)
 
         player.replaceCurrentItem(with: item)
         if autoplay { player.play() }
@@ -138,7 +139,12 @@ final class AVPlayerEngine: PlaybackEngine {
         }
     }
 
-    private func observeStatus(of item: AVPlayerItem) {
+    /// Identifies the load a status report belongs to. Answering "is this
+    /// still the item I loaded" from `player.currentItem` instead would drop a
+    /// genuine failure whenever AVPlayer has already let go of the failed item.
+    private var loadToken = 0
+
+    private func observeStatus(of item: AVPlayerItem, token: Int) {
         // KVO on `status` fires on whichever queue AVFoundation happens to be
         // using, never reliably the main one. Read what we need here, then hop
         // to the main actor with plain values — `assumeIsolated` would trap.
@@ -151,7 +157,7 @@ final class AVPlayerEngine: PlaybackEngine {
                 // Dropping the observation on the next `load` does not cancel a
                 // hop that is already queued, so a stale failure would arrive
                 // after the controller moved on and skip a healthy track.
-                guard let self, item === self.player.currentItem else { return }
+                guard let self, token == self.loadToken else { return }
                 switch status {
                 case .readyToPlay:
                     if seconds.isFinite, seconds > 0 { self.loadedDuration = seconds }

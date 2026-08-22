@@ -28,8 +28,13 @@ final class FakeEngine: PlaybackEngine {
     func seek(to seconds: Double) { currentTime = seconds }
     func stop() { isPlaying = false; currentTime = 0 }
 
-    /// Simulates the current item reaching its end.
-    func finishTrack() { onTrackFinished?() }
+    /// Simulates the current item reaching its end. A real player is parked at
+    /// the end of the item when it reports this, which is how the controller
+    /// tells a file that played from one that finished without ever playing.
+    func finishTrack() {
+        currentTime = duration
+        onTrackFinished?()
+    }
 }
 
 @Suite("Playback queue")
@@ -285,6 +290,50 @@ struct PlayerControllerTests {
         #expect(player.currentTrack?.title == "Track 1")
         #expect(player.isPlaying)
         #expect(player.errorMessage == nil)
+    }
+
+    @Test("A file that ends without playing does not clear earlier failures")
+    func instantFinishKeepsFailureCount() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(2), startAt: 0)
+        // A zero-length or audio-less file reaches its end at position 0.
+        engine.duration = 0
+
+        engine.onError?("Corrupt file")
+        engine.finishTrack()
+        engine.onError?("Corrupt file")
+        engine.onError?("Corrupt file")
+
+        #expect(player.isPlaying == false)
+        #expect(player.errorMessage == "None of these tracks can be played right now.")
+    }
+
+    @Test("An unreachable queue reports the whole queue, not the last track tried")
+    func unreachableQueueUnderRepeatOff() throws {
+        let (player, engine) = try makeController()
+        let missing = (1...3).map {
+            Track(relativePath: "@missing/t\($0).mp3", title: "Track \($0)", duration: 200)
+        }
+        player.play(tracks: missing, startAt: 0)
+
+        #expect(player.isPlaying == false)
+        #expect(engine.loadedURLs.isEmpty)
+        #expect(player.errorMessage == "None of these tracks are in a folder Lyra can reach right now.")
+    }
+
+    @Test("Skipping only part of a queue says so rather than blaming every track")
+    func partiallyUnreachableQueue() throws {
+        let (player, _) = try makeController()
+        let mixed = [
+            Track(relativePath: "t1.mp3", title: "Track 1", duration: 200),
+            Track(relativePath: "@missing/t2.mp3", title: "Track 2", duration: 200),
+            Track(relativePath: "@missing/t3.mp3", title: "Track 3", duration: 200),
+        ]
+        player.play(tracks: mixed, startAt: 1)
+
+        #expect(player.isPlaying == false)
+        #expect(player.errorMessage == "The rest of these tracks aren't in a folder Lyra can reach right now.")
     }
 
     @Test("Seeking is clamped to the track length")

@@ -347,6 +347,7 @@ final class PlayerController {
     /// unplugged drive would otherwise nest 2,000 frames deep and overflow the
     /// main thread stack before the give-up message could be shown.
     private func loadCurrent(autoplay: Bool) {
+        var skipped = 0
         while let track = currentTrack {
             // The folder this track lives in may be gone — an external drive
             // unplugged, a permission revoked. Skip it rather than stalling,
@@ -361,11 +362,12 @@ final class PlayerController {
                     return
                 }
                 LyraLog.playback.notice("Playback skipped unreachable local track")
+                skipped += 1
                 guard registerLoadFailure(
                     "\(track.title) is in a folder Lyra can't reach right now.",
-                    whenQueueExhausted: "None of these tracks are in a folder Lyra can reach right now."
+                    whenQueueExhausted: Self.noTrackReachable
                 ) else { return }
-                guard moveToNextPosition(.trackUnplayable) else { return }
+                guard moveToNextPosition(.trackUnplayable) else { break }
                 continue
             }
 
@@ -381,7 +383,20 @@ final class PlayerController {
             recordPlay(of: track)
             return
         }
+
+        // The walk ended without loading anything. Under the default
+        // repeat-off, `moveToNextPosition` finishes the queue before the
+        // failure count can exceed it, so naming the last track skipped would
+        // blame one arbitrary file for a whole unreachable folder.
+        if skipped > 0 {
+            errorMessage = skipped >= order.count ? Self.noTrackReachable : Self.restNotReachable
+        }
     }
+
+    private static let noTrackReachable =
+        "None of these tracks are in a folder Lyra can reach right now."
+    private static let restNotReachable =
+        "The rest of these tracks aren't in a folder Lyra can reach right now."
 
     /// Counts a failed attempt and reports whether another track is worth
     /// trying. Shared by "the file is not there" and "the engine refused it":
@@ -468,13 +483,14 @@ final class PlayerController {
             guard let self else { return }
             // Playing through to the end is proof the track was fine, and a
             // file short enough to finish inside one observer tick never
-            // reports a non-zero time.
-            self.consecutiveLoadFailures = 0
+            // reports a non-zero time. A zero-length or audio-less file reaches
+            // the end at position 0 without ever playing, so that is not proof.
+            if self.engine.currentTime > 0 { self.consecutiveLoadFailures = 0 }
             self.next(userInitiated: false)
         }
 
         engine.onError = { [weak self] message in
-            guard let self else { return }
+            guard let self, self.currentTrack != nil else { return }
             LyraLog.playback.error("Playback engine reported a track error")
             // A single corrupt file should not stall the whole queue, and a
             // queue of them should not be walked forever.
