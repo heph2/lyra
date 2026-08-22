@@ -272,6 +272,21 @@ struct WebDAVSourceTests {
         }
     }
 
+    @Test("A declared body larger than the budget is rejected from the headers alone")
+    func rejectsIgnoredRangeFromContentLength() async {
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 200,
+                body: Data(repeating: 0, count: 4_096),
+                headers: ["Content-Length": "4096"]
+            )
+        }
+        let item = ScannedFile(relativePath: "@webdav-test/Album/song.mp3", size: 4_096, modified: .now)
+        await #expect(throws: LibrarySourceError.rangeNotSupported) {
+            try await source().metadataHeader(for: item, maxBytes: 1_024)
+        }
+    }
+
     @Test("A file shorter than the requested range is accepted whole")
     func acceptsShortFileServedWithoutPartialContent() async throws {
         WebDAVURLProtocol.handler = { _ in .init(status: 200, body: Data("ID3 tiny".utf8)) }

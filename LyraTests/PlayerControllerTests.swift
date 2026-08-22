@@ -108,6 +108,31 @@ struct PlayerControllerTests {
         #expect(player.currentTrack?.title == "Track 2")
     }
 
+    @Test("Repeat one skips a track that cannot be reached instead of replaying the last one")
+    func repeatOneSkipsUnreachableTrack() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .one
+        let unreachable = Track(relativePath: "@missing-source/gone.mp3", title: "Gone", duration: 200)
+        let reachable = Track(relativePath: "reachable.mp3", title: "Reachable", duration: 200)
+        player.play(tracks: [unreachable, reachable], startAt: 0)
+
+        #expect(player.currentTrack?.title == "Reachable")
+        #expect(engine.loadedURLs.count == 1)
+        #expect(engine.loadedURLs.last?.lastPathComponent == "reachable.mp3")
+    }
+
+    @Test("Repeat one stops rather than claiming playback when nothing in the queue can be reached")
+    func repeatOneStopsWhenNothingIsReachable() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .one
+        let list = (1...3).map { Track(relativePath: "@missing-source/t\($0).mp3", title: "T\($0)", duration: 200) }
+        player.play(tracks: list, startAt: 0)
+
+        #expect(engine.loadedURLs.isEmpty)
+        #expect(!player.isPlaying)
+        #expect(player.errorMessage != nil)
+    }
+
     @Test("Previous restarts the track when past three seconds")
     func previousRestarts() throws {
         let (player, _) = try makeController()

@@ -171,9 +171,23 @@ final class PlayerController {
     /// Advances one track. `userInitiated` distinguishes tapping Next (which
     /// ignores repeat-one) from a track ending naturally.
     func next(userInitiated: Bool = true) {
+        advance(userInitiated ? .userInitiated : .trackFinished)
+    }
+
+    /// Why we are leaving the current track. Only a track that actually played
+    /// to its end may be replayed by repeat-one: replaying one we could not
+    /// load would resume the *previous* item's audio under the new track's
+    /// name, and would trap the queue on a file that never plays.
+    private enum Advance {
+        case userInitiated
+        case trackFinished
+        case trackUnplayable
+    }
+
+    private func advance(_ reason: Advance) {
         guard !order.isEmpty else { return }
 
-        if !userInitiated, repeatMode == .one {
+        if reason == .trackFinished, repeatMode == .one, currentTrack != nil {
             seek(to: 0)
             engine.play()
             isPlaying = true
@@ -193,7 +207,7 @@ final class PlayerController {
             position = 0
             loadCurrent(autoplay: true)
         case .off, .one:
-            if userInitiated {
+            if reason == .userInitiated {
                 // Tapping Next at the end wraps rather than dead-ending.
                 position = 0
                 loadCurrent(autoplay: true)
@@ -332,7 +346,7 @@ final class PlayerController {
                 return
             }
             errorMessage = "\(track.title) is in a folder Lyra can't reach right now."
-            next(userInitiated: false)
+            advance(.trackUnplayable)
             return
         }
         consecutiveLoadFailures = 0
@@ -420,7 +434,7 @@ final class PlayerController {
             LyraLog.playback.error("Playback engine reported a track error")
             self.errorMessage = message
             // A single corrupt file should not stall the whole queue.
-            self.next(userInitiated: false)
+            self.advance(.trackUnplayable)
         }
     }
 

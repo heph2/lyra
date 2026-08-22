@@ -24,7 +24,11 @@ enum OfflineLibrary {
     /// would inflate every device backup even though every byte of it can be
     /// downloaded again. Excluding the directory itself covers every copy
     /// underneath it, whenever it is created.
-    private static func librariesDirectory() -> URL? {
+    ///
+    /// Resolved once: every path lookup goes through here, so doing the
+    /// directory creation and the backup-exclusion check per call would cost
+    /// three filesystem round trips per track of a selection.
+    private static let librariesURL: URL? = {
         guard let base = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -41,7 +45,7 @@ enum OfflineLibrary {
             try? directory.setResourceValues(values)
         }
         return directory
-    }
+    }()
 
     static func fileURL(sourceID: String, innerPath: String) -> URL? {
         guard sourceID != LibraryManager.dropZoneID,
@@ -55,7 +59,7 @@ enum OfflineLibrary {
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
         else { return nil }
 
-        guard let base = librariesDirectory() else { return nil }
+        guard let base = librariesURL else { return nil }
 
         var url = base
             .appending(path: sourceID, directoryHint: .isDirectory)
@@ -215,7 +219,10 @@ final class OfflineSyncManager {
                 try? await store.completeOfflineDownload(path: request.relativePath)
                 LyraLog.offline.info("Offline download completed remaining=\(self.pending.count)")
             case .failure(let error):
-                if !(error is CancellationError) {
+                // Deselecting a downloading track cancels its URLSession task,
+                // which surfaces as URLError.cancelled rather than
+                // CancellationError — that is a user action, not a failure.
+                if !Self.isCancellation(error) {
                     lastError = error.localizedDescription
                     let code = DiagnosticValue.errorCode(error)
                     LyraLog.offline.error("Offline download failed error=\(code, privacy: .public)")
@@ -224,5 +231,10 @@ final class OfflineSyncManager {
             }
             startPendingDownloads()
         }
+    }
+
+    private static func isCancellation(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
     }
 }

@@ -85,11 +85,27 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         request.setValue("bytes=0-\(limit - 1)", forHTTPHeaderField: "Range")
 
         let (stream, response) = try await requestBytes(request)
-        guard let http = response as? HTTPURLResponse else { throw LibrarySourceError.unavailable }
-        if http.statusCode == 401 { throw LibrarySourceError.signInRequired }
+        // Every exit before the body is read has to cancel the task, or the
+        // session keeps pulling the whole file down for a response we already
+        // rejected — a 401 library would do that once per track.
+        guard let http = response as? HTTPURLResponse else {
+            stream.task.cancel()
+            throw LibrarySourceError.unavailable
+        }
+        guard http.statusCode != 401 else {
+            stream.task.cancel()
+            throw LibrarySourceError.signInRequired
+        }
         guard (200...299).contains(http.statusCode) else {
             stream.task.cancel()
             throw LibrarySourceError.server(status: http.statusCode)
+        }
+        // A declared length past the budget on a non-partial response is the
+        // range-ignoring server the byte loop exists to catch, and the headers
+        // prove it before a single byte of the body is read.
+        if http.statusCode != 206, http.expectedContentLength > Int64(limit) {
+            stream.task.cancel()
+            throw LibrarySourceError.rangeNotSupported
         }
 
         let data = try await prefix(of: stream, limit: limit)
@@ -107,7 +123,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     /// memory — six of these run concurrently during a scan.
     private func prefix(of stream: URLSession.AsyncBytes, limit: Int) async throws -> Data {
         var bytes = [UInt8]()
-        bytes.reserveCapacity(min(limit, 1 << 16) + 1)
+        bytes.reserveCapacity(limit + 1)
         do {
             for try await byte in stream {
                 bytes.append(byte)
