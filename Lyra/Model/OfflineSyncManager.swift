@@ -20,6 +20,29 @@ struct OfflineDownloadRequest: Sendable, Hashable {
 enum OfflineLibrary {
     private static let folderName = "Libraries"
 
+    /// Application Support is backed up, so a multi-gigabyte offline selection
+    /// would inflate every device backup even though every byte of it can be
+    /// downloaded again. Excluding the directory itself covers every copy
+    /// underneath it, whenever it is created.
+    private static func librariesDirectory() -> URL? {
+        guard let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) else { return nil }
+
+        var directory = base.appending(path: folderName, directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let excluded = try? directory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        if excluded != true {
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? directory.setResourceValues(values)
+        }
+        return directory
+    }
+
     static func fileURL(sourceID: String, innerPath: String) -> URL? {
         guard sourceID != LibraryManager.dropZoneID,
               !sourceID.isEmpty,
@@ -32,15 +55,9 @@ enum OfflineLibrary {
               components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
         else { return nil }
 
-        guard let base = try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) else { return nil }
+        guard let base = librariesDirectory() else { return nil }
 
         var url = base
-            .appending(path: folderName, directoryHint: .isDirectory)
             .appending(path: sourceID, directoryHint: .isDirectory)
             .appending(path: "Music", directoryHint: .isDirectory)
         for (index, component) in components.enumerated() {

@@ -138,6 +138,111 @@ struct WebDAVSourceTests {
         #expect(files.map(\.relativePath) == ["@webdav-test/Caparezza/Museica/Album/01. Canzone all'entrata.wav"])
     }
 
+    @Test("A relative href resolves against the collection being listed")
+    func resolvesRelativeHrefAgainstListedCollection() async throws {
+        WebDAVURLProtocol.handler = { request in
+            switch request.url!.path(percentEncoded: false) {
+            case "/music/":
+                return .init(status: 207, body: webDAVXML("""
+                <D:multistatus xmlns:D="DAV:">
+                  <D:response><D:href>/music/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+                  <D:response><D:href>Albums/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+                </D:multistatus>
+                """))
+            case "/music/Albums/":
+                return .init(status: 207, body: webDAVXML("""
+                <D:multistatus xmlns:D="DAV:">
+                  <D:response><D:href>./</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+                  <D:response><D:href>01%20song.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:getlastmodified>Tue, 04 Jun 2024 12:34:56 GMT</D:getlastmodified><D:resourcetype/></D:prop></D:propstat></D:response>
+                </D:multistatus>
+                """))
+            default:
+                return .init(status: 404, body: Data())
+            }
+        }
+
+        let files = try await source().scan()
+        #expect(files.map(\.relativePath) == ["@webdav-test/Albums/01 song.mp3"])
+    }
+
+    @Test("A collection that cannot be listed is skipped, not a failed scan")
+    func skipsUnlistableCollection() async throws {
+        WebDAVURLProtocol.handler = { request in
+            switch request.url!.path(percentEncoded: false) {
+            case "/music/":
+                return .init(status: 207, body: webDAVXML("""
+                <D:multistatus xmlns:D="DAV:">
+                  <D:response><D:href>/music/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+                  <D:response><D:href>/music/Gone/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+                  <D:response><D:href>/music/here.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:resourcetype/></D:prop></D:propstat></D:response>
+                </D:multistatus>
+                """))
+            default:
+                return .init(status: 404, body: Data())
+            }
+        }
+
+        let files = try await source().scan()
+        #expect(files.map(\.relativePath) == ["@webdav-test/here.mp3"])
+    }
+
+    @Test("Hrefs pointing at another host are dropped rather than followed with credentials")
+    func ignoresForeignHosts() async throws {
+        WebDAVURLProtocol.handler = { request in
+            #expect(request.url?.host == "server.example")
+            #expect(request.url?.port == nil)
+            guard request.url?.host == "server.example", request.url?.port == nil else {
+                return .init(status: 207, body: webDAVXML("""
+                <D:multistatus xmlns:D="DAV:">
+                  <D:response><D:href>/leaked.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:resourcetype/></D:prop></D:propstat></D:response>
+                </D:multistatus>
+                """))
+            }
+            return .init(status: 207, body: webDAVXML("""
+            <D:multistatus xmlns:D="DAV:">
+              <D:response><D:href>/music/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+              <D:response><D:href>http://attacker.example/music/Albums/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+              <D:response><D:href>https://server.example:8443/music/other.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:resourcetype/></D:prop></D:propstat></D:response>
+              <D:response><D:href>https://attacker.example/music/steal.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:resourcetype/></D:prop></D:propstat></D:response>
+            </D:multistatus>
+            """))
+        }
+
+        #expect(try await source().scan().isEmpty)
+    }
+
+    @Test("A collection that loops back into itself ends the scan with an error")
+    func rejectsSelfReferentialCollection() async {
+        WebDAVURLProtocol.handler = { request in
+            let path = request.url!.path(percentEncoded: false)
+            return .init(status: 207, body: webDAVXML("""
+            <D:multistatus xmlns:D="DAV:">
+              <D:response><D:href>\(path)</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+              <D:response><D:href>\(path)loop/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+            </D:multistatus>
+            """))
+        }
+
+        await #expect(throws: LibrarySourceError.scanLimitReached) { try await source().scan() }
+    }
+
+    @Test("Servers spelling getlastmodified as RFC 850 or asctime still date their files")
+    func parsesLegacyHTTPDates() async throws {
+        WebDAVURLProtocol.handler = { _ in
+            .init(status: 207, body: webDAVXML("""
+            <D:multistatus xmlns:D="DAV:">
+              <D:response><D:href>/music/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>
+              <D:response><D:href>/music/rfc850.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:getlastmodified>Sunday, 06-Nov-94 08:49:37 GMT</D:getlastmodified><D:resourcetype/></D:prop></D:propstat></D:response>
+              <D:response><D:href>/music/asctime.mp3</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength><D:getlastmodified>Sun Nov  6 08:49:37 1994</D:getlastmodified><D:resourcetype/></D:prop></D:propstat></D:response>
+            </D:multistatus>
+            """))
+        }
+
+        let files = try await source().scan()
+        #expect(files.count == 2)
+        #expect(files.allSatisfy { $0.modified != .distantPast })
+    }
+
     @Test("An empty collection is a successful empty scan")
     func scansEmptyCollection() async throws {
         WebDAVURLProtocol.handler = { _ in

@@ -6,7 +6,7 @@ import SwiftUI
 struct SourcesView: View {
     @Environment(LibraryScanner.self) private var scanner
     @Environment(\.dismiss) private var dismiss
-    @Query private var tracks: [Track]
+    @Environment(\.modelContext) private var modelContext
 
     @State private var isPickingFolder = false
     @State private var isAddingWebDAV = false
@@ -98,7 +98,7 @@ struct SourcesView: View {
 
     @ViewBuilder
     private func row(for source: MusicSource) -> some View {
-        let count = tracks.count { $0.sourceID == source.id }
+        let count = trackCount(for: source.id)
         let status = LibraryManager.shared.availability(for: source.id)
 
         HStack(spacing: 12) {
@@ -124,6 +124,14 @@ struct SourcesView: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    /// Counting through the store rather than a `@Query` of every `Track`:
+    /// the rows only need six numbers, and materialising a multi-thousand-track
+    /// library on every redraw is what the sheet used to do.
+    private func trackCount(for sourceID: String) -> Int {
+        let descriptor = FetchDescriptor<Track>(predicate: #Predicate { $0.sourceID == sourceID })
+        return (try? modelContext.fetchCount(descriptor)) ?? 0
     }
 
     private func icon(for source: MusicSource) -> String {

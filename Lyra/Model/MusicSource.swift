@@ -76,12 +76,13 @@ struct LibraryScanResult: Sendable {
     var errors: [String] = []
 }
 
-enum LibrarySourceError: LocalizedError, Sendable {
+enum LibrarySourceError: LocalizedError, Sendable, Equatable {
     case unavailable
     case invalidConfiguration
     case signInRequired
     case notWebDAVServer
     case rangeNotSupported
+    case scanLimitReached
     case server(status: Int)
 
     var errorDescription: String? {
@@ -91,6 +92,7 @@ enum LibrarySourceError: LocalizedError, Sendable {
         case .signInRequired: "Sign in again to this WebDAV library."
         case .notWebDAVServer: "This server did not return a WebDAV response."
         case .rangeNotSupported: "This server does not support metadata range reads."
+        case .scanLimitReached: "This library has more folders than Lyra can index, or its folders link back into themselves."
         case .server(let status): "The server returned HTTP \(status)."
         }
     }
