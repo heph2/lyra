@@ -62,6 +62,28 @@ struct AudioFileTests {
     }
 }
 
+@Suite("Local folder source")
+struct LocalFolderSourceTests {
+
+    @Test("A selected folder recursively exposes supported music")
+    func enumeratesNestedMusic() throws {
+        let root = URL.temporaryDirectory.appending(
+            path: "LyraLocalSource-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        let album = root.appending(path: "Artist/Album", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try Data().write(to: album.appending(path: "01 Song.wav"))
+        try Data().write(to: album.appending(path: "cover.jpg"))
+
+        let files = LocalFolderSource.enumerateAudioFiles(in: root, sourceID: "picked-folder")
+
+        #expect(files.map(\.relativePath) == ["@picked-folder/Artist/Album/01 Song.wav"])
+    }
+}
+
 @Suite("Grouping")
 struct LibraryGroupingTests {
 
@@ -116,7 +138,7 @@ struct LibraryGroupingTests {
             makeTrack("loose.mp3"),
         ]
 
-        let local = SourceRegistry.dropZoneID
+        let local = LibraryManager.dropZoneID
         let root = LibraryGrouping.folder(at: "", sourceID: local, tracks: tracks)
         #expect(root.subfolders == ["Rock"])
         #expect(root.tracks.count == 1)
@@ -133,7 +155,7 @@ struct LibraryGroupingTests {
             makeTrack("Rock/Other/c.mp3"),
             makeTrack("Jazz/d.mp3"),
         ]
-        let local = SourceRegistry.dropZoneID
+        let local = LibraryManager.dropZoneID
         #expect(LibraryGrouping.tracksRecursively(under: "Rock", sourceID: local, tracks: tracks).count == 2)
         #expect(LibraryGrouping.tracksRecursively(under: "", sourceID: local, tracks: tracks).count == 3)
     }
@@ -147,10 +169,10 @@ struct LibraryGroupingTests {
         ]
 
         // Same folder name in two different sources must not merge.
-        let localRoot = LibraryGrouping.folder(at: "", sourceID: SourceRegistry.dropZoneID, tracks: tracks)
+        let localRoot = LibraryGrouping.folder(at: "", sourceID: LibraryManager.dropZoneID, tracks: tracks)
         #expect(localRoot.subfolders == ["Albums"])
         #expect(LibraryGrouping.tracksRecursively(
-            under: "Albums", sourceID: SourceRegistry.dropZoneID, tracks: tracks
+            under: "Albums", sourceID: LibraryManager.dropZoneID, tracks: tracks
         ).count == 1)
 
         #expect(LibraryGrouping.tracksRecursively(
@@ -165,13 +187,13 @@ struct TrackPathTests {
     @Test("Drop-zone paths stay bare, so old libraries keep working")
     func dropZoneRoundTrip() {
         let path = AudioFile.trackPath(
-            sourceID: SourceRegistry.dropZoneID,
+            sourceID: LibraryManager.dropZoneID,
             innerPath: "Artist/Album/01 Song.mp3"
         )
         #expect(path == "Artist/Album/01 Song.mp3")
 
         let split = AudioFile.split(trackPath: path)
-        #expect(split.sourceID == SourceRegistry.dropZoneID)
+        #expect(split.sourceID == LibraryManager.dropZoneID)
         #expect(split.innerPath == "Artist/Album/01 Song.mp3")
     }
 

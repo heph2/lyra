@@ -131,13 +131,13 @@ enum AudioFile {
     /// `@<source-id>/`, which cannot collide because a real relative path never
     /// starts with `@`.
     static func trackPath(sourceID: String, innerPath: String) -> String {
-        sourceID == SourceRegistry.dropZoneID ? innerPath : "@\(sourceID)/\(innerPath)"
+        sourceID == LibraryManager.dropZoneID ? innerPath : "@\(sourceID)/\(innerPath)"
     }
 
     /// Inverse of `trackPath(sourceID:innerPath:)`.
     static func split(trackPath path: String) -> (sourceID: String, innerPath: String) {
         guard path.hasPrefix("@"), let slash = path.firstIndex(of: "/") else {
-            return (SourceRegistry.dropZoneID, path)
+            return (LibraryManager.dropZoneID, path)
         }
         let sourceID = String(path[path.index(after: path.startIndex)..<slash])
         let innerPath = String(path[path.index(after: slash)...])

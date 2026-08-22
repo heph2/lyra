@@ -42,6 +42,8 @@ struct TrackRow: View {
                     .accessibilityLabel(player.isPlaying ? "Now playing" : "Paused")
             }
 
+            offlineIndicator
+
             Text(track.formattedDuration)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -68,6 +70,35 @@ struct TrackRow: View {
         let album = track.album
         return album.isEmpty ? track.displayArtist : "\(track.displayArtist) — \(album)"
     }
+
+    @ViewBuilder
+    private var offlineIndicator: some View {
+        if LibraryManager.shared.source(for: track.sourceID)?.isRemote == true {
+            Group {
+                switch track.offlineState {
+                case .availableRemote:
+                    Image(systemName: "cloud")
+                        .accessibilityLabel("Available remotely")
+                case .downloading:
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Downloading for offline playback")
+                case .availableOffline:
+                    Image(systemName: "checkmark.circle.fill")
+                        .accessibilityLabel("Available offline")
+                case .modifiedRemote:
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .accessibilityLabel("Updated version downloading")
+                case .unavailable:
+                    Image(systemName: "exclamationmark.triangle")
+                        .accessibilityLabel("Offline download unavailable")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(track.offlineState == .availableOffline ? Color.green : Color.secondary)
+            .frame(width: 16, height: 16)
+        }
+    }
 }
 
 /// Long-press / swipe actions shared by every track list.
@@ -75,6 +106,7 @@ struct TrackContextMenu: ViewModifier {
     let tracks: [Track]
 
     @Environment(PlayerController.self) private var player
+    @Environment(OfflineSyncManager.self) private var offlineSync
     @State private var showingPlaylistPicker = false
 
     func body(content: Content) -> some View {
@@ -89,10 +121,29 @@ struct TrackContextMenu: ViewModifier {
                 Button("Add to Playlist…", systemImage: "text.badge.plus") {
                     showingPlaylistPicker = true
                 }
+                if !remoteTracks.isEmpty {
+                    Divider()
+                    Button(downloadTitle, systemImage: "arrow.down.circle") {
+                        offlineSync.download(remoteTracks)
+                    }
+                    if remoteTracks.contains(where: { $0.offlineRequested }) {
+                        Button("Remove Offline Copy", systemImage: "trash", role: .destructive) {
+                            offlineSync.removeOfflineCopies(remoteTracks)
+                        }
+                    }
+                }
             }
             .sheet(isPresented: $showingPlaylistPicker) {
                 AddToPlaylistSheet(tracks: tracks)
             }
+    }
+
+    private var remoteTracks: [Track] {
+        tracks.filter { LibraryManager.shared.source(for: $0.sourceID)?.isRemote == true }
+    }
+
+    private var downloadTitle: String {
+        remoteTracks.count == 1 ? "Download Offline" : "Download \(remoteTracks.count) Tracks"
     }
 }
 

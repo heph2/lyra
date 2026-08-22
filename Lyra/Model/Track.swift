@@ -11,7 +11,7 @@ final class Track {
 
     /// Which folder this track lives in. Defaults to the drop zone so libraries
     /// written before external folders existed migrate without a rescan.
-    var sourceID: String = SourceRegistry.dropZoneID
+    var sourceID: String = LibraryManager.dropZoneID
 
     var title: String
     var artist: String
@@ -40,6 +40,11 @@ final class Track {
 
     var playCount: Int
     var lastPlayed: Date?
+
+    /// The user's explicit choice to keep a remote track on this device.
+    /// Local-folder tracks never use this; their files are already local.
+    var offlineRequested: Bool = false
+    var offlineStateRaw: String = OfflineState.availableRemote.rawValue
 
     init(
         relativePath: String,
@@ -84,14 +89,21 @@ final class Track {
 }
 
 extension Track {
-    /// Nil when the track's folder cannot be reached — an unplugged drive, a
-    /// revoked permission, a folder the user deleted.
-    var fileURL: URL? { SourceRegistry.shared.url(forTrackPath: relativePath) }
+    /// A selected remote copy wins over the source URL. Remote-only tracks
+    /// remain nil here because streaming is intentionally not supported.
+    var fileURL: URL? {
+        OfflineLibrary.localURL(for: self) ?? LibraryManager.shared.url(forTrackPath: relativePath)
+    }
 
     /// Path within its own source, without the `@id` prefix.
     var innerPath: String { AudioFile.split(trackPath: relativePath).innerPath }
 
-    var isFromDropZone: Bool { sourceID == SourceRegistry.dropZoneID }
+    var isFromDropZone: Bool { sourceID == LibraryManager.dropZoneID }
+
+    var offlineState: OfflineState {
+        get { OfflineState(rawValue: offlineStateRaw) ?? .availableRemote }
+        set { offlineStateRaw = newValue.rawValue }
+    }
 
     /// What to show when a track has no artist tag.
     var displayArtist: String { artist.isEmpty ? "Unknown Artist" : artist }

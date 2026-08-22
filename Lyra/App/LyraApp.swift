@@ -7,6 +7,7 @@ struct LyraApp: App {
 
     @State private var player: PlayerController
     @State private var scanner: LibraryScanner
+    @State private var offlineSync: OfflineSyncManager
 
     init() {
         // Before anything else: without this the app never shows up in the
@@ -14,9 +15,11 @@ struct LyraApp: App {
         AudioFile.prepareDropZone()
 
         let container = Self.makeContainer()
+        let offlineSync = OfflineSyncManager(container: container)
         self.container = container
         _player = State(initialValue: PlayerController(container: container))
-        _scanner = State(initialValue: LibraryScanner(container: container))
+        _scanner = State(initialValue: LibraryScanner(container: container, offlineSync: offlineSync))
+        _offlineSync = State(initialValue: offlineSync)
     }
 
     var body: some Scene {
@@ -24,6 +27,7 @@ struct LyraApp: App {
             RootView()
                 .environment(player)
                 .environment(scanner)
+                .environment(offlineSync)
         }
         .modelContainer(container)
     }

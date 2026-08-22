@@ -8,11 +8,11 @@ import SwiftUI
 struct FolderBrowserView: View {
     let tracks: [Track]
 
-    private var sources: [MusicSource] { SourceRegistry.shared.allSources }
+    private var sources: [MusicSource] { LibraryManager.shared.allSources }
 
     var body: some View {
         if sources.count <= 1 {
-            FolderContentsView(path: "", sourceID: SourceRegistry.dropZoneID, tracks: tracks)
+            FolderContentsView(path: "", sourceID: LibraryManager.dropZoneID, tracks: tracks)
         } else {
             List(sources) { source in
                 let count = LibraryGrouping.tracksRecursively(
@@ -20,7 +20,7 @@ struct FolderBrowserView: View {
                     sourceID: source.id,
                     tracks: tracks
                 ).count
-                let reachable = SourceRegistry.shared.isReachable(source.id)
+                let reachable = LibraryManager.shared.availability(for: source.id).isReachable
 
                 NavigationLink(value: FolderRoute(path: "", sourceID: source.id)) {
                     Label {
@@ -42,7 +42,7 @@ struct FolderBrowserView: View {
             .navigationDestination(for: FolderRoute.self) { route in
                 FolderContentsView(path: route.path, sourceID: route.sourceID, tracks: tracks)
                     .navigationTitle(route.path.isEmpty
-                                     ? SourceRegistry.shared.displayName(for: route.sourceID)
+                                     ? LibraryManager.shared.displayName(for: route.sourceID)
                                      : AudioFile.folderDisplayName(route.path))
                     .navigationBarTitleDisplayMode(.inline)
             }

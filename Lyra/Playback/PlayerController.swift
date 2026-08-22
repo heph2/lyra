@@ -315,6 +315,12 @@ final class PlayerController {
         // give up once we have tried the whole queue, or an unreachable folder
         // plus repeat-all would spin forever.
         guard let url = track.fileURL else {
+            if LibraryManager.shared.source(for: track.sourceID)?.isRemote == true {
+                errorMessage = "\(track.title) has not been downloaded yet. "
+                    + "Long-press it and choose Download Offline to play it."
+                finishQueue()
+                return
+            }
             consecutiveLoadFailures += 1
             guard consecutiveLoadFailures <= order.count else {
                 consecutiveLoadFailures = 0

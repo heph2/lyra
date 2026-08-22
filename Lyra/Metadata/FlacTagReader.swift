@@ -79,6 +79,48 @@ enum FlacTagReader {
         return sawAnything ? metadata : nil
     }
 
+    /// Parses a ranged WebDAV response. A truncated metadata block simply
+    /// yields whatever preceded it, letting the caller apply path fallbacks
+    /// instead of downloading a full remote track during indexing.
+    static func read(data: Data) -> TrackMetadata? {
+        let bytes = [UInt8](data)
+        guard bytes.starts(with: Array("fLaC".utf8)) else { return nil }
+
+        var cursor = 4
+        var metadata = TrackMetadata()
+        var sawAnything = false
+        while cursor + 4 <= bytes.count {
+            let header = bytes[cursor..<(cursor + 4)]
+            cursor += 4
+            let isLast = header[header.startIndex] & 0x80 != 0
+            let rawType = header[header.startIndex] & 0x7F
+            let length = Int(header[header.startIndex + 1]) << 16
+                | Int(header[header.startIndex + 2]) << 8
+                | Int(header[header.startIndex + 3])
+            guard length <= maxBlockBytes, cursor + length <= bytes.count else { break }
+            let body = Data(bytes[cursor..<(cursor + length)])
+
+            switch BlockType(rawValue: rawType) {
+            case .streamInfo:
+                if let seconds = parseStreamInfoDuration(body) { metadata.duration = seconds }
+                sawAnything = true
+            case .vorbisComment:
+                applyVorbisComments(body, to: &metadata)
+                sawAnything = true
+            case .picture:
+                if metadata.artworkData == nil, length <= maxPictureBytes {
+                    metadata.artworkData = parsePicture(body)
+                    sawAnything = true
+                }
+            case nil:
+                break
+            }
+            cursor += length
+            if isLast { break }
+        }
+        return sawAnything ? metadata : nil
+    }
+
     // MARK: - STREAMINFO
 
     /// Sample rate is 20 bits at bit offset 144; total sample count is 36 bits

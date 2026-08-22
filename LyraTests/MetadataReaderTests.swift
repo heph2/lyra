@@ -6,6 +6,14 @@ import Testing
 @Suite("Tag value parsing")
 struct MetadataParsingTests {
 
+    @Test("Only front-tag formats receive remote metadata range reads")
+    func remoteHeaderFormats() {
+        #expect(MetadataReader.supportsRemoteHeaderMetadata(fileExtension: "flac"))
+        #expect(MetadataReader.supportsRemoteHeaderMetadata(fileExtension: "MP3"))
+        #expect(!MetadataReader.supportsRemoteHeaderMetadata(fileExtension: "wav"))
+        #expect(!MetadataReader.supportsRemoteHeaderMetadata(fileExtension: "m4a"))
+    }
+
     @Test("Track numbers arrive as plain numbers or as \"n/total\"")
     func leadingInt() {
         #expect(MetadataReader.parseLeadingInt("3/12") == 3)
@@ -88,5 +96,47 @@ struct PathFallbackTests {
             #expect(metadata.title == "Title", "failed for \(name)")
             #expect(metadata.trackNumber == 1, "failed for \(name)")
         }
+    }
+
+    /// A remote scan only ever reads the front of the file, so the declared
+    /// ID3 tag size routinely exceeds what arrived. The frames that did arrive
+    /// still have to be read, or a WebDAV library indexes as filenames.
+    @Test("An ID3 tag cut short by a ranged read still yields its text frames")
+    func truncatedID3Tag() {
+        var tag = Data("ID3".utf8)
+        tag.append(contentsOf: [0x03, 0x00, 0x00])          // v2.3, no flags
+        tag.append(contentsOf: synchsafe(2_000_000))        // claims a huge tag
+        tag.append(textFrame("TIT2", "Real Title"))
+        tag.append(textFrame("TPE1", "Real Artist"))
+        tag.append(textFrame("TALB", "Real Album"))
+        // …and then the read stopped, mid cover art.
+
+        let metadata = MetadataReader.read(
+            headerData: tag,
+            fileExtension: "mp3",
+            relativePath: "Folder/Album/01 Wrong.mp3"
+        )
+
+        #expect(metadata.title == "Real Title")
+        #expect(metadata.artist == "Real Artist")
+        #expect(metadata.album == "Real Album")
+        #expect(metadata.artworkData == nil)
+    }
+
+    private func synchsafe(_ value: Int) -> [UInt8] {
+        [24, 16, 8, 0].map { UInt8((value >> $0) & 0x7F) }
+    }
+
+    private func textFrame(_ identifier: String, _ text: String) -> Data {
+        let body = Data([0x03]) + Data(text.utf8)  // UTF-8 encoding byte
+        var frame = Data(identifier.utf8)
+        let size = body.count
+        frame.append(contentsOf: [
+            UInt8((size >> 24) & 0xFF), UInt8((size >> 16) & 0xFF),
+            UInt8((size >> 8) & 0xFF), UInt8(size & 0xFF),
+        ])
+        frame.append(contentsOf: [0x00, 0x00])     // frame flags
+        frame.append(body)
+        return frame
     }
 }

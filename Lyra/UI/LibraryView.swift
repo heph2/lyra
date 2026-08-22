@@ -32,7 +32,15 @@ struct LibraryView: View {
             .toolbar { toolbar }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if !tracks.isEmpty {
-                    sectionPicker
+                    VStack(spacing: 0) {
+                        sectionPicker
+                        // Only the empty state used to report a failed scan, so
+                        // a library source that stopped answering was invisible
+                        // to anyone who already had tracks.
+                        if let error = scanner.lastError {
+                            scanFailureBanner(error)
+                        }
+                    }
                 }
             }
             .overlay(alignment: .top) {
@@ -57,6 +65,25 @@ struct LibraryView: View {
         case .folders:
             FolderBrowserView(tracks: tracks)
         }
+    }
+
+    private func scanFailureBanner(_ error: String) -> some View {
+        Button {
+            showingSources = true
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(error)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.orange)
+        .background(.bar)
     }
 
     private var sectionPicker: some View {
@@ -92,7 +119,7 @@ struct LibraryView: View {
                     }
                 }
                 Divider()
-                Button("Music Folders…", systemImage: "folder.badge.gearshape") {
+                Button("Library Sources…", systemImage: "folder.badge.gearshape") {
                     showingSources = true
                 }
                 Button("Rescan Library", systemImage: "arrow.clockwise") {
@@ -188,7 +215,7 @@ struct EmptyLibraryView: View {
             }
             .buttonStyle(.borderedProminent)
 
-            Button("Music Folders…", systemImage: "folder.badge.gearshape", action: onManageFolders)
+            Button("Library Sources…", systemImage: "folder.badge.gearshape", action: onManageFolders)
         }
     }
 
@@ -259,7 +286,9 @@ struct ScanProgressBar: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(.thinMaterial)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .padding(.top, 4)
         .transition(.move(edge: .top).combined(with: .opacity))
         .animation(.default, value: scanner.isScanning)
     }
