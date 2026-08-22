@@ -101,7 +101,7 @@ struct LibraryGroupingTests {
         let albums = LibraryGrouping.albums(from: sample)
         #expect(albums.count == 3)
 
-        let kidA = try? #require(albums.first { $0.title == "Kid A" })
+        let kidA = albums.first { $0.title == "Kid A" }
         #expect(kidA?.tracks.count == 2)
         #expect(kidA?.artist == "Radiohead")
 

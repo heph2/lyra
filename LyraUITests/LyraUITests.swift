@@ -5,13 +5,19 @@ import XCTest
 /// These are deliberately separate from `LyraTests`: they need a booted
 /// simulator, a seeded drop zone and — for the WebDAV cases — a server on the
 /// host, so they run under their own scheme rather than in CI's unit-test pass.
+@MainActor
 final class LyraUITests: XCTestCase {
-    private var app: XCUIApplication!
+    /// XCTest's `setUp()` overrides stay nonisolated, so launching the app
+    /// there from this @MainActor case would cross actors. Every test starts
+    /// by waiting on the UI, so launching on first use is the same moment.
+    private lazy var app: XCUIApplication = {
+        let app = XCUIApplication()
+        app.launch()
+        return app
+    }()
 
     override func setUp() {
         continueAfterFailure = true
-        app = XCUIApplication()
-        app.launch()
     }
 
     // MARK: - Evidence helpers
