@@ -253,6 +253,40 @@ struct PlayerControllerTests {
         #expect(player.isPlaying)
     }
 
+    @Test("A long queue of unreachable files gives up instead of exhausting the stack")
+    func unreachableQueueSkipsIteratively() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        // A source id that was never registered resolves to no base URL, so
+        // every one of these tracks looks like an unplugged drive.
+        let missing = (1...2_000).map {
+            Track(relativePath: "@missing/t\($0).mp3", title: "Track \($0)", duration: 200)
+        }
+        player.play(tracks: missing, startAt: 0)
+
+        #expect(player.isPlaying == false)
+        #expect(player.errorMessage == "None of these tracks are in a folder Lyra can reach right now.")
+        #expect(engine.loadedURLs.isEmpty)
+    }
+
+    @Test("Reaching the end of a track clears earlier failures")
+    func finishingClearsFailureCount() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(2), startAt: 0)
+
+        engine.onError?("Corrupt file")
+        // No time update: a file short enough to finish inside one observer
+        // tick never reports a non-zero position.
+        engine.finishTrack()
+        engine.onError?("Corrupt file")
+        engine.onError?("Corrupt file")
+
+        #expect(player.currentTrack?.title == "Track 1")
+        #expect(player.isPlaying)
+        #expect(player.errorMessage == nil)
+    }
+
     @Test("Seeking is clamped to the track length")
     func seekClamping() throws {
         let (player, _) = try makeController()

@@ -238,9 +238,17 @@ final class LibraryManager: @unchecked Sendable {
 
     func remove(sourceID: String) throws {
         guard sourceID != Self.dropZoneID else { return }
+        lock.lock()
+        let storedPassword = external.first { $0.id == sourceID }?.isRemote ?? false
+        lock.unlock()
         // Delete the secret first. If Keychain is unavailable, retain the
-        // configuration instead of leaving an orphaned password behind.
-        try KeychainStore.deletePassword(for: sourceID)
+        // configuration instead of leaving an orphaned password behind. Only a
+        // remote library ever wrote one: a picked folder has no item to delete,
+        // and on a re-signed build `SecItemDelete` answers
+        // errSecMissingEntitlement, which would strand it in the list forever.
+        if storedPassword {
+            try KeychainStore.deletePassword(for: sourceID)
+        }
         lock.lock()
         passwords.removeValue(forKey: sourceID)
         if let url = resolved.removeValue(forKey: sourceID) {

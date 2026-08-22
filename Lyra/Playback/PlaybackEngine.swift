@@ -148,7 +148,10 @@ final class AVPlayerEngine: PlaybackEngine {
             let message = item.error?.localizedDescription
 
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                // Dropping the observation on the next `load` does not cancel a
+                // hop that is already queued, so a stale failure would arrive
+                // after the controller moved on and skip a healthy track.
+                guard let self, item === self.player.currentItem else { return }
                 switch status {
                 case .readyToPlay:
                     if seconds.isFinite, seconds > 0 { self.loadedDuration = seconds }

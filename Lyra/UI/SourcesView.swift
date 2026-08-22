@@ -157,6 +157,10 @@ private struct WebDAVLibraryForm: View {
     @State private var password = ""
     @State private var isTesting = false
     @State private var message: Message?
+    /// The library is added and persisted before its Keychain warning is shown,
+    /// so a second tap on Add would create a duplicate source under a fresh id
+    /// and index every track twice.
+    @State private var didAdd = false
 
     private struct Message: Equatable {
         var text: String
@@ -207,8 +211,12 @@ private struct WebDAVLibraryForm: View {
                     Button("Cancel", action: onAdded)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") { add() }
-                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if didAdd {
+                        Button("Done", action: onAdded)
+                    } else {
+                        Button("Add") { add() }
+                            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
                 }
             }
         }
@@ -237,6 +245,7 @@ private struct WebDAVLibraryForm: View {
             // worth keeping — the user just needs to know it will not survive
             // a relaunch, so the form stays open to say so.
             if let warning {
+                didAdd = true
                 message = Message(text: warning, isError: true)
             } else {
                 onAdded()
