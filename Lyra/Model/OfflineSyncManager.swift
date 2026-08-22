@@ -164,7 +164,10 @@ final class OfflineSyncManager {
             active.removeValue(forKey: path)?.task.cancel()
         }
         pending.removeAll { paths.contains($0.relativePath) }
-        activeDownloads = active.count
+        // The cancelled tasks report back under a token that is no longer
+        // registered, so their `complete` is a no-op and nothing else would
+        // refill the slots they just freed.
+        startPendingDownloads()
 
         Task {
             let store = LibraryStore(modelContainer: container)
@@ -208,7 +211,12 @@ final class OfflineSyncManager {
         startPendingDownloads()
     }
 
+    /// The one place `active` grows, and the one place its published count is
+    /// republished after it changes for any reason, so every caller that
+    /// cancels or completes a download also refills the freed slots.
     private func startPendingDownloads() {
+        defer { activeDownloads = active.count }
+
         while active.count < concurrency, !pending.isEmpty {
             let request = pending.removeFirst()
             guard let source = LibraryManager.shared.remoteSource(for: request.sourceID),
@@ -229,7 +237,6 @@ final class OfflineSyncManager {
                 }
             }
             active[request.relativePath] = ActiveDownload(token: token, task: task)
-            activeDownloads = active.count
         }
     }
 

@@ -76,7 +76,10 @@ final class PlayerController {
     /// we know whether resuming after an interruption is appropriate.
     private var wasPlayingBeforeInterruption = false
 
-    /// Guards against spinning through a queue whose files cannot be reached.
+    /// Guards against spinning through a queue whose tracks cannot be played.
+    /// A resolved URL is not proof of playback, so this is cleared only once
+    /// audio actually progresses — an engine error arrives after the load that
+    /// would otherwise have reset it.
     private var consecutiveLoadFailures = 0
 
     init(container: ModelContainer, engine: (any PlaybackEngine)? = nil) {
@@ -125,6 +128,7 @@ final class PlayerController {
         guard !tracks.isEmpty, tracks.indices.contains(index) else { return }
         LyraLog.playback.info("Loading playback queue tracks=\(tracks.count)")
 
+        consecutiveLoadFailures = 0
         queue = tracks
         order = Array(tracks.indices)
         if isShuffled {
@@ -187,6 +191,10 @@ final class PlayerController {
     private func advance(_ reason: Advance) {
         guard !order.isEmpty else { return }
 
+        // Asking for a different track is a fresh attempt, not a continuation
+        // of a run of failures.
+        if reason == .userInitiated { consecutiveLoadFailures = 0 }
+
         if reason == .trackFinished, repeatMode == .one, currentTrack != nil {
             seek(to: 0)
             engine.play()
@@ -227,6 +235,7 @@ final class PlayerController {
             return
         }
         if position > 0 {
+            consecutiveLoadFailures = 0
             position -= 1
             loadCurrent(autoplay: true)
         } else {
@@ -310,6 +319,7 @@ final class PlayerController {
     func jumpToUpcoming(offset: Int) {
         let target = position + 1 + offset
         guard order.indices.contains(target) else { return }
+        consecutiveLoadFailures = 0
         position = target
         loadCurrent(autoplay: true)
     }
@@ -337,19 +347,13 @@ final class PlayerController {
                 finishQueue()
                 return
             }
-            consecutiveLoadFailures += 1
             LyraLog.playback.notice("Playback skipped unreachable local track")
-            guard consecutiveLoadFailures <= order.count else {
-                consecutiveLoadFailures = 0
-                errorMessage = "None of these tracks are in a folder Lyra can reach right now."
-                finishQueue()
-                return
-            }
-            errorMessage = "\(track.title) is in a folder Lyra can't reach right now."
-            advance(.trackUnplayable)
+            failCurrentTrack(
+                "\(track.title) is in a folder Lyra can't reach right now.",
+                whenQueueExhausted: "None of these tracks are in a folder Lyra can reach right now."
+            )
             return
         }
-        consecutiveLoadFailures = 0
 
         errorMessage = nil
         currentTime = 0
@@ -363,7 +367,22 @@ final class PlayerController {
         recordPlay(of: track)
     }
 
+    /// Shared by "the file is not there" and "the engine refused it": both
+    /// leave the queue walking forever under repeat-all if nothing counts the
+    /// failures, and only one of them is visible before a load is attempted.
+    private func failCurrentTrack(_ message: String, whenQueueExhausted exhausted: String) {
+        consecutiveLoadFailures += 1
+        guard consecutiveLoadFailures <= order.count else {
+            errorMessage = exhausted
+            finishQueue()
+            return
+        }
+        errorMessage = message
+        advance(.trackUnplayable)
+    }
+
     private func finishQueue() {
+        consecutiveLoadFailures = 0
         engine.pause()
         isPlaying = false
         currentTime = 0
@@ -411,6 +430,8 @@ final class PlayerController {
         engine.onTimeUpdate = { [weak self] seconds in
             guard let self, !self.isScrubbing else { return }
             self.currentTime = seconds
+            // Audio moving is the only proof a track really played.
+            if seconds > 0 { self.consecutiveLoadFailures = 0 }
             // Duration is only known once the asset loads; adopt it when it
             // differs from the tag-derived value.
             let engineDuration = self.engine.duration
@@ -432,9 +453,12 @@ final class PlayerController {
         engine.onError = { [weak self] message in
             guard let self else { return }
             LyraLog.playback.error("Playback engine reported a track error")
-            self.errorMessage = message
-            // A single corrupt file should not stall the whole queue.
-            self.advance(.trackUnplayable)
+            // A single corrupt file should not stall the whole queue, and a
+            // queue of them should not be walked forever.
+            self.failCurrentTrack(
+                message,
+                whenQueueExhausted: "None of these tracks can be played right now."
+            )
         }
     }
 

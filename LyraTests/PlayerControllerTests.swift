@@ -224,6 +224,35 @@ struct PlayerControllerTests {
         #expect(player.currentTrack?.title == "Track 2")
     }
 
+    @Test("A queue of unplayable files stops instead of looping under repeat-all")
+    func unplayableQueueStopsUnderRepeatAll() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(3), startAt: 0)
+
+        for _ in 0..<4 { engine.onError?("Corrupt file") }
+
+        #expect(player.isPlaying == false)
+        #expect(player.errorMessage == "None of these tracks can be played right now.")
+        // Initial load plus one attempt per track, and nothing after the queue
+        // has been proven unplayable.
+        #expect(engine.loadedURLs.count == 4)
+    }
+
+    @Test("Audio that actually progresses clears earlier failures")
+    func progressClearsFailureCount() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(2), startAt: 0)
+
+        engine.onError?("Corrupt file")
+        engine.onTimeUpdate?(5)
+        engine.onError?("Corrupt file")
+
+        #expect(player.currentTrack?.title == "Track 1")
+        #expect(player.isPlaying)
+    }
+
     @Test("Seeking is clamped to the track length")
     func seekClamping() throws {
         let (player, _) = try makeController()
