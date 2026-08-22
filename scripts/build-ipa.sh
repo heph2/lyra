@@ -37,6 +37,8 @@ fi
 log "Generating Lyra.xcodeproj"
 xcodegen generate
 
+# macOS ships bash 3.2, where "${EMPTY_ARRAY[@]}" is an unbound-variable error
+# under `set -u`. The +expansion keeps the no-override run working.
 BUILD_SETTINGS=()
 [[ -n "${RELEASE_VERSION}" ]] && BUILD_SETTINGS+=("MARKETING_VERSION=${RELEASE_VERSION}")
 [[ -n "${BUILD_NUMBER}" ]] && BUILD_SETTINGS+=("CURRENT_PROJECT_VERSION=${BUILD_NUMBER}")
@@ -57,7 +59,7 @@ xcodebuild archive \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
   CODE_SIGN_ENTITLEMENTS="" \
-  "${BUILD_SETTINGS[@]}" \
+  ${BUILD_SETTINGS[@]+"${BUILD_SETTINGS[@]}"} \
   2>&1 | tee "${BUILD_LOG}" | grep -E '^(\*\*|error:|warning: )'
 XCODE_STATUS="${PIPESTATUS[0]}"
 set -e

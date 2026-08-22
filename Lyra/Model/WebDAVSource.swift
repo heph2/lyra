@@ -108,7 +108,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
             throw LibrarySourceError.rangeNotSupported
         }
 
-        let data = try await prefix(of: stream, limit: limit)
+        let data = try await prefix(of: stream, limit: limit, declared: http.expectedContentLength)
         LyraLog.webDAV.debug("Metadata range response status=\(http.statusCode) bytes=\(data.count)")
         if http.statusCode == 206 { return data.count > limit ? Data(data.prefix(limit)) : data }
         // A file smaller than the requested range legitimately comes back whole
@@ -121,9 +121,19 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     /// Reads one byte past the budget and stops. That extra byte is what proves
     /// the server ignored `Range`, and stopping there keeps a whole album out of
     /// memory — six of these run concurrently during a scan.
-    private func prefix(of stream: URLSession.AsyncBytes, limit: Int) async throws -> Data {
+    ///
+    /// `declared` is the response's content length, already checked against the
+    /// budget by the caller, or negative when the server sent none. Reserving
+    /// against it keeps an eight-byte file from committing the whole 1 MB
+    /// artwork budget up front; only a length-less chunked body pays for the
+    /// ceiling.
+    private func prefix(
+        of stream: URLSession.AsyncBytes,
+        limit: Int,
+        declared: Int64
+    ) async throws -> Data {
         var bytes = [UInt8]()
-        bytes.reserveCapacity(limit + 1)
+        bytes.reserveCapacity(declared >= 0 ? Int(min(declared, Int64(limit))) + 1 : limit + 1)
         do {
             for try await byte in stream {
                 bytes.append(byte)

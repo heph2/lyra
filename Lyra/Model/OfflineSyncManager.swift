@@ -20,15 +20,30 @@ struct OfflineDownloadRequest: Sendable, Hashable {
 enum OfflineLibrary {
     private static let folderName = "Libraries"
 
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cachedLibrariesURL: URL?
+
+    /// Cached on success only. A `let` would also cache a transient failure of
+    /// the Application Support lookup, and every download and every offline
+    /// playback would stay dead for the rest of the process.
+    ///
+    /// Caching matters because every path lookup goes through here: resolving
+    /// the directory per call would cost three filesystem round trips per track
+    /// of a selection.
+    private static var librariesURL: URL? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cachedLibrariesURL { return cachedLibrariesURL }
+        guard let resolved = prepareLibrariesDirectory() else { return nil }
+        cachedLibrariesURL = resolved
+        return resolved
+    }
+
     /// Application Support is backed up, so a multi-gigabyte offline selection
     /// would inflate every device backup even though every byte of it can be
     /// downloaded again. Excluding the directory itself covers every copy
     /// underneath it, whenever it is created.
-    ///
-    /// Resolved once: every path lookup goes through here, so doing the
-    /// directory creation and the backup-exclusion check per call would cost
-    /// three filesystem round trips per track of a selection.
-    private static let librariesURL: URL? = {
+    private static func prepareLibrariesDirectory() -> URL? {
         guard let base = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -37,7 +52,11 @@ enum OfflineLibrary {
         ) else { return nil }
 
         var directory = base.appending(path: folderName, directoryHint: .isDirectory)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
         let excluded = try? directory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
         if excluded != true {
             var values = URLResourceValues()
@@ -45,7 +64,7 @@ enum OfflineLibrary {
             try? directory.setResourceValues(values)
         }
         return directory
-    }()
+    }
 
     static func fileURL(sourceID: String, innerPath: String) -> URL? {
         guard sourceID != LibraryManager.dropZoneID,
@@ -105,7 +124,12 @@ final class OfflineSyncManager {
     private let container: ModelContainer
     private let concurrency = 3
     private var pending: [OfflineDownloadRequest] = []
-    private var active: [String: Task<Void, Never>] = [:]
+    private var active: [String: ActiveDownload] = [:]
+
+    private struct ActiveDownload {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
 
     private(set) var activeDownloads = 0
     private(set) var lastError: String?
@@ -137,7 +161,7 @@ final class OfflineSyncManager {
         LyraLog.offline.info("Offline copies removal requested tracks=\(paths.count)")
 
         for path in paths {
-            active.removeValue(forKey: path)?.cancel()
+            active.removeValue(forKey: path)?.task.cancel()
         }
         pending.removeAll { paths.contains($0.relativePath) }
         activeDownloads = active.count
@@ -190,28 +214,38 @@ final class OfflineSyncManager {
             guard let source = LibraryManager.shared.remoteSource(for: request.sourceID),
                   let destination = OfflineLibrary.fileURL(sourceID: request.sourceID, innerPath: request.innerPath)
             else {
-                complete(request, result: .failure(LibrarySourceError.unavailable))
+                finish(request, result: .failure(LibrarySourceError.unavailable))
                 continue
             }
 
+            let token = UUID()
             let task = Task { [weak self] in
                 do {
                     let item = ScannedFile(relativePath: request.relativePath, size: 0, modified: .distantPast)
                     try await source.download(item, to: destination)
-                    self?.complete(request, result: .success(()))
+                    self?.complete(request, token: token, result: .success(()))
                 } catch {
-                    self?.complete(request, result: .failure(error))
+                    self?.complete(request, token: token, result: .failure(error))
                 }
             }
-            active[request.relativePath] = task
+            active[request.relativePath] = ActiveDownload(token: token, task: task)
             activeDownloads = active.count
         }
     }
 
-    private func complete(_ request: OfflineDownloadRequest, result: Result<Void, any Error>) {
+    /// Deselecting a downloading track and reselecting it immediately starts a
+    /// second task under the same path before the first one's cancellation
+    /// lands. Without the token the late report would evict the live task from
+    /// `active`, so it would run untracked, `activeDownloads` would under-count,
+    /// and a later reconcile could start a third download to the same file.
+    private func complete(_ request: OfflineDownloadRequest, token: UUID, result: Result<Void, any Error>) {
+        guard active[request.relativePath]?.token == token else { return }
         active.removeValue(forKey: request.relativePath)
         activeDownloads = active.count
+        finish(request, result: result)
+    }
 
+    private func finish(_ request: OfflineDownloadRequest, result: Result<Void, any Error>) {
         Task {
             let store = LibraryStore(modelContainer: container)
             switch result {
