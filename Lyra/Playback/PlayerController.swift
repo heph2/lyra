@@ -195,10 +195,23 @@ final class PlayerController {
         // of a run of failures.
         if reason == .userInitiated { consecutiveLoadFailures = 0 }
 
-        if reason == .trackFinished, repeatMode == .one, currentTrack != nil {
-            seek(to: 0)
-            engine.play()
-            isPlaying = true
+        if reason == .trackFinished, repeatMode == .one, let track = currentTrack {
+            // A zero-length or audio-less file reaches its end at position 0
+            // without ever playing, and replaying it posts the same end
+            // notification straight back: the loop would spin on the main queue
+            // with nothing counting the failure.
+            if engine.currentTime > 0 {
+                seek(to: 0)
+                engine.play()
+                isPlaying = true
+                return
+            }
+            LyraLog.playback.notice("Repeat-one skipped a track that finished without playing")
+            guard registerLoadFailure(
+                "\(track.title) could not be played.",
+                whenQueueExhausted: Self.noTrackPlayable
+            ) else { return }
+            if moveToNextPosition(.trackUnplayable) { loadCurrent(autoplay: true) }
             return
         }
 
@@ -397,6 +410,8 @@ final class PlayerController {
         "None of these tracks are in a folder Lyra can reach right now."
     private static let restNotReachable =
         "The rest of these tracks aren't in a folder Lyra can reach right now."
+    private static let noTrackPlayable =
+        "None of these tracks can be played right now."
 
     /// Counts a failed attempt and reports whether another track is worth
     /// trying. Shared by "the file is not there" and "the engine refused it":
@@ -496,7 +511,7 @@ final class PlayerController {
             // queue of them should not be walked forever.
             guard self.registerLoadFailure(
                 message,
-                whenQueueExhausted: "None of these tracks can be played right now."
+                whenQueueExhausted: Self.noTrackPlayable
             ) else { return }
             self.advance(.trackUnplayable)
         }

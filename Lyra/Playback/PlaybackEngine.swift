@@ -107,6 +107,10 @@ final class AVPlayerEngine: PlaybackEngine {
 
     func stop() {
         player.pause()
+        // Tearing down invalidates the load the same way replacing it does: a
+        // status hop already in flight would otherwise report a duration or a
+        // failure for an item this player no longer has.
+        loadToken += 1
         player.replaceCurrentItem(with: nil)
         loadedDuration = 0
     }

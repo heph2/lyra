@@ -113,6 +113,33 @@ struct PlayerControllerTests {
         #expect(player.currentTrack?.title == "Track 2")
     }
 
+    @Test("Repeat one moves on when the track finished without ever playing")
+    func repeatOneSkipsTrackThatNeverPlayed() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .one
+        player.play(tracks: tracks(2), startAt: 0)
+
+        // A zero-length or audio-less file reaches its end at position 0.
+        engine.duration = 0
+        engine.finishTrack()
+
+        #expect(player.currentTrack?.title == "Track 2")
+    }
+
+    @Test("Repeat one stops instead of spinning when nothing in the queue ever plays")
+    func repeatOneStopsWhenNothingPlays() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .one
+        player.play(tracks: tracks(2), startAt: 0)
+
+        engine.duration = 0
+        engine.finishTrack()
+        engine.finishTrack()
+
+        #expect(!player.isPlaying)
+        #expect(player.errorMessage != nil)
+    }
+
     @Test("Repeat one skips a track that cannot be reached instead of replaying the last one")
     func repeatOneSkipsUnreachableTrack() throws {
         let (player, engine) = try makeController()
