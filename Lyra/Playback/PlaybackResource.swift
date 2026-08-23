@@ -17,6 +17,7 @@ struct RemotePlaybackResource: Sendable, Equatable {
     let sourceID: String
     let relativePath: String
     let contentLength: Int64
+    let duration: Double
     let fileExtension: String
 }
 
@@ -28,6 +29,7 @@ enum PlaybackResourceResolver {
             sourceID: track.sourceID,
             relativePath: track.relativePath,
             contentLength: track.fileSize,
+            duration: track.duration,
             fileExtension: URL(filePath: track.innerPath).pathExtension.lowercased()
         ))
     }

@@ -107,19 +107,30 @@ final class LyraUITests: XCTestCase {
         XCTAssertTrue(nowPlaying.waitForExistence(timeout: 20), "streaming transport never appeared")
         nowPlaying.tap()
         XCTAssertTrue(app.staticTexts["Event Horizon"].waitForExistence(timeout: 20))
-        let elapsed = app.staticTexts.matching(
-            NSPredicate(format: "label MATCHES '0:0[1-9]'")
-        ).firstMatch
-        XCTAssertTrue(elapsed.waitForExistence(timeout: 30), "remote stream never advanced")
+        let elapsed = app.staticTexts["Playback elapsed"]
+        XCTAssertTrue(elapsed.waitForExistence(timeout: 20), "elapsed time is missing")
+        let deadline = Date().addingTimeInterval(30)
+        var advanced = false
+        while Date() < deadline {
+            if elapsed.label.range(of: "^0:0[4-9]$", options: .regularExpression) != nil {
+                advanced = true
+                break
+            }
+            usleep(200_000)
+        }
+        XCTAssertTrue(advanced, "remote stream never advanced")
         capture("13-streaming-cloud-only-track")
         let pauseButtons = app.buttons.matching(identifier: "Pause")
+        var paused = false
         for index in 0..<pauseButtons.count {
             let button = pauseButtons.element(boundBy: index)
             if button.isHittable {
                 button.tap()
+                paused = true
                 break
             }
         }
+        XCTAssertTrue(paused, "the remote stream could not be paused")
         app.navigationBars.buttons["Done"].firstMatch.tap()
 
         selectSection("Albums")

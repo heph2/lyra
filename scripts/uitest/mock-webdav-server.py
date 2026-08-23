@@ -30,6 +30,7 @@ lock = threading.Lock()
 
 
 def record(entry):
+    entry["time"] = time.time()
     with lock:
         with open(LOG, "a") as handle:
             handle.write(json.dumps(entry) + "\n")

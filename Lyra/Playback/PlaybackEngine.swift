@@ -50,6 +50,9 @@ final class AVPlayerEngine: PlaybackEngine {
     private var endObserver: (any NSObjectProtocol)?
     private var statusObservation: NSKeyValueObservation?
     private var webDAVLoader: WebDAVAssetLoader?
+    private var remotePreparationTask: Task<Void, Never>?
+    private var wantsPlayback = false
+    private var isPreparingRemote = false
 
     /// Cached because `AVPlayerItem.duration` is unknown until the asset loads,
     /// and the UI needs a stable value to lay out the scrubber.
@@ -83,18 +86,23 @@ final class AVPlayerEngine: PlaybackEngine {
     var duration: Double { loadedDuration }
 
     func load(resource: PlaybackResource, autoplay: Bool) {
+        remotePreparationTask?.cancel()
+        remotePreparationTask = nil
         webDAVLoader?.cancelAll()
         webDAVLoader = nil
+        wantsPlayback = autoplay
+        isPreparingRemote = false
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        loadedDuration = 0
+        loadToken += 1
+        let token = loadToken
 
-        let asset: AVURLAsset
         switch resource {
         case .local(let url):
-            asset = AVURLAsset(url: url)
+            install(asset: AVURLAsset(url: url), remote: false, token: token)
         case .remote(let remote):
             guard let source = LibraryManager.shared.remoteSource(for: remote.sourceID) else {
-                loadedDuration = 0
-                loadToken += 1
-                player.replaceCurrentItem(with: nil)
                 Task { @MainActor [weak self] in
                     self?.onError?(PlaybackFailure(
                         message: "This WebDAV library can't be reached right now.",
@@ -103,32 +111,105 @@ final class AVPlayerEngine: PlaybackEngine {
                 }
                 return
             }
-            let loader = WebDAVAssetLoader(source: source, resource: remote)
-            asset = loader.makeAsset()
-            webDAVLoader = loader
+
+            // AVPlayer can leave a custom-scheme asset in `.unknown` forever
+            // without asking its resource loader for data. Proving one tiny
+            // authenticated range first gives unsupported servers a bounded,
+            // actionable failure instead of an endless paused-looking player.
+            remotePreparationTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let probeLength = max(1, min(Int64(2), remote.contentLength))
+                    let item = ScannedFile(
+                        relativePath: remote.relativePath,
+                        size: remote.contentLength,
+                        modified: .distantPast
+                    )
+                    _ = try await source.readRange(for: item, range: 0..<probeLength)
+                    try Task.checkCancellation()
+                    guard token == self.loadToken else { return }
+
+                    let loader = WebDAVAssetLoader(
+                        source: source,
+                        resource: remote,
+                        playbackActive: self.wantsPlayback
+                    )
+                    self.webDAVLoader = loader
+                    let asset = loader.makeAsset()
+                    self.isPreparingRemote = true
+                    self.install(asset: asset, remote: true, token: token, startPlayback: false)
+                    try await Task.sleep(for: .seconds(20))
+                    guard token == self.loadToken, self.isPreparingRemote else { return }
+                    self.isPreparingRemote = false
+                    loader.cancelAll()
+                    // A status callback may already be queued when the timeout
+                    // tears the item down. Invalidate it before reporting this
+                    // failure so the controller cannot skip two tracks.
+                    self.loadToken += 1
+                    self.player.replaceCurrentItem(with: nil)
+                    if let reason = loader.takeLastFailure() {
+                        self.onError?(Self.failure(for: reason))
+                    } else {
+                        self.onError?(PlaybackFailure(
+                            message: "This WebDAV track took too long to start."
+                        ))
+                    }
+                } catch is CancellationError {
+                    return
+                } catch let reason as LibrarySourceError {
+                    guard token == self.loadToken else { return }
+                    self.isPreparingRemote = false
+                    self.onError?(Self.failure(for: reason))
+                } catch {
+                    guard token == self.loadToken else { return }
+                    self.isPreparingRemote = false
+                    if let reason = self.webDAVLoader?.takeLastFailure() {
+                        self.onError?(Self.failure(for: reason))
+                        return
+                    }
+                    self.onError?(PlaybackFailure(message: "This file could not be played."))
+                }
+            }
         }
+    }
+
+    private func install(
+        asset: AVURLAsset,
+        remote: Bool,
+        token: Int,
+        startPlayback: Bool = true
+    ) {
         // A local file has the whole track on disk, so waiting to buffer only
         // delays the first note. A streamed one has nothing but what the last
         // range returned, and starting it with no headroom stalls audibly on
         // the first network hiccup.
-        player.automaticallyWaitsToMinimizeStalling = resource.isRemote
-        let item = AVPlayerItem(asset: asset)
+        player.automaticallyWaitsToMinimizeStalling = remote
+        let item = remote
+            ? AVPlayerItem(
+                asset: asset,
+                automaticallyLoadedAssetKeys: ["playable", "duration"]
+            )
+            : AVPlayerItem(asset: asset)
+        if remote { item.preferredForwardBufferDuration = 15 }
 
-        loadedDuration = 0
-        loadToken += 1
         observeEnd(of: item)
-        observeStatus(of: item, token: loadToken)
+        observeStatus(of: item, token: token)
 
         player.replaceCurrentItem(with: item)
-        if autoplay { player.play() }
+        if startPlayback, wantsPlayback { player.play() }
     }
 
     func play() {
+        wantsPlayback = true
+        webDAVLoader?.setPlaybackActive(true)
+        guard !isPreparingRemote else { return }
         guard player.currentItem != nil else { return }
         player.play()
     }
 
     func pause() {
+        wantsPlayback = false
+        webDAVLoader?.setPlaybackActive(false)
         player.pause()
     }
 
@@ -141,6 +222,10 @@ final class AVPlayerEngine: PlaybackEngine {
     }
 
     func stop() {
+        wantsPlayback = false
+        remotePreparationTask?.cancel()
+        remotePreparationTask = nil
+        isPreparingRemote = false
         player.pause()
         // Tearing down invalidates the load the same way replacing it does: a
         // status hop already in flight would otherwise report a duration or a
@@ -202,7 +287,17 @@ final class AVPlayerEngine: PlaybackEngine {
                 switch status {
                 case .readyToPlay:
                     if seconds.isFinite, seconds > 0 { self.loadedDuration = seconds }
+                    if self.isPreparingRemote {
+                        self.isPreparingRemote = false
+                        self.remotePreparationTask?.cancel()
+                        self.remotePreparationTask = nil
+                        self.webDAVLoader?.setPlaybackActive(self.wantsPlayback)
+                        if self.wantsPlayback { self.player.play() }
+                    }
                 case .failed:
+                    self.isPreparingRemote = false
+                    self.remotePreparationTask?.cancel()
+                    self.remotePreparationTask = nil
                     self.onError?(self.failure(describedAs: message))
                 default:
                     break
@@ -215,10 +310,17 @@ final class AVPlayerEngine: PlaybackEngine {
     /// failure, so the reason the loader recorded is the only thing that can
     /// tell the user whether to retry or to download the album.
     private func failure(describedAs message: String?) -> PlaybackFailure {
-        guard let reason = webDAVLoader?.lastFailure else {
+        guard let reason = webDAVLoader?.takeLastFailure() else {
             return PlaybackFailure(message: message ?? "This file could not be played.")
         }
-        return PlaybackFailure(message: Self.message(for: reason), isSourceUnavailable: true)
+        return Self.failure(for: reason)
+    }
+
+    private static func failure(for reason: LibrarySourceError) -> PlaybackFailure {
+        PlaybackFailure(
+            message: Self.message(for: reason),
+            isSourceUnavailable: Self.isSourceUnavailable(reason)
+        )
     }
 
     private static func message(for reason: LibrarySourceError) -> String {
@@ -228,9 +330,24 @@ final class AVPlayerEngine: PlaybackEngine {
         case .rangeNotSupported:
             "This server can't be streamed from. Long-press these tracks and "
                 + "choose Download Offline to play them."
+        case .server(let status) where status == 404 || status == 410:
+            "This track is no longer available on the WebDAV server."
+        case .server(let status):
+            "The WebDAV server returned HTTP \(status) for this track."
+        case .invalidConfiguration:
+            "This track's WebDAV location is invalid."
         default:
             "This WebDAV library can't be reached right now. Tracks you have "
                 + "downloaded still play."
+        }
+    }
+
+    private static func isSourceUnavailable(_ reason: LibrarySourceError) -> Bool {
+        switch reason {
+        case .unavailable, .signInRequired, .rangeNotSupported:
+            true
+        default:
+            false
         }
     }
 }

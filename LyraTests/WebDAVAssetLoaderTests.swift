@@ -16,12 +16,25 @@ struct WebDAVAssetLoaderTests {
                 sourceID: source.id,
                 relativePath: "@stream-test/Album/test.wav",
                 contentLength: Int64(audio.count),
+                duration: 1,
                 fileExtension: "wav"
             )
         )
 
         let asset = loader.makeAsset()
-        let duration = try await asset.load(.duration)
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(5))
+            loader.cancelAll()
+        }
+        defer { watchdog.cancel() }
+
+        let duration: CMTime
+        do {
+            duration = try await asset.load(.duration)
+        } catch {
+            Issue.record("AVFoundation failed after ranges \(source.requestedRanges): \(error)")
+            return
+        }
         let seconds = CMTimeGetSeconds(duration)
 
         #expect(seconds.isFinite)
@@ -29,6 +42,40 @@ struct WebDAVAssetLoaderTests {
         #expect(!source.requestedRanges.isEmpty)
         #expect(source.requestedRanges.allSatisfy { $0.count <= 524_288 })
         loader.cancelAll()
+    }
+
+    @Test("Range planning clamps AVFoundation probes to the known file end")
+    func clampsRangesToFileEnd() {
+        #expect(PlaybackRangePlanner.nextRange(
+            offset: 900,
+            requestedUpperBound: 2_000,
+            totalLength: 1_000,
+            maximumLength: 512
+        ) == 900..<1_000)
+        #expect(PlaybackRangePlanner.nextRange(
+            offset: 1_000,
+            requestedUpperBound: 2_000,
+            totalLength: 1_000,
+            maximumLength: 512
+        ) == nil)
+    }
+
+    @Test("To-end playback is paced after a bounded initial buffer")
+    func pacesReadAhead() {
+        let policy = StreamPacingPolicy(resource: RemotePlaybackResource(
+            sourceID: "stream-test",
+            relativePath: "@stream-test/track.flac",
+            contentLength: 3_000_000,
+            duration: 45,
+            fileExtension: "flac"
+        ))
+
+        #expect(policy.initialBufferBytes >= 1_048_576)
+        #expect(policy.initialBufferBytes < 3_000_000)
+        #expect(policy.delay(
+            beforeDeliveringAt: policy.initialBufferBytes + 524_288,
+            elapsed: .zero
+        ) != nil)
     }
 }
 

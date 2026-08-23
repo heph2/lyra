@@ -348,6 +348,26 @@ struct WebDAVSourceTests {
         #expect(response.data.count == 1_024)
     }
 
+    @Test("An unknown complete length requires a usable indexed size")
+    func rejectsUnknownCompleteLengthWithoutIndexedSize() async {
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 206,
+                body: Data(repeating: 3, count: 1_024),
+                headers: ["Content-Range": "bytes 0-1023/*"]
+            )
+        }
+        let item = ScannedFile(
+            relativePath: "@webdav-test/Album/song.flac",
+            size: 0,
+            modified: .now
+        )
+
+        await #expect(throws: LibrarySourceError.rangeNotSupported) {
+            try await source().readRange(for: item, range: 0..<1_024)
+        }
+    }
+
     @Test("Playback rejects a server that ignores byte ranges")
     func playbackRejectsIgnoredRange() async {
         WebDAVURLProtocol.handler = { _ in

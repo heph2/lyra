@@ -91,6 +91,7 @@ struct NowPlayingView: View {
 
             HStack {
                 Text(Self.timeString(player.isScrubbing ? scrubPosition : player.currentTime))
+                    .accessibilityIdentifier("Playback elapsed")
                 Spacer()
                 Text("-" + Self.timeString(max(0, player.duration - (player.isScrubbing ? scrubPosition : player.currentTime))))
             }

@@ -129,15 +129,13 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         // declared length past the budget proves it ignored `Range`, would
         // otherwise do that once per track.
         let (data, http) = try await body(for: request) { http in
-            guard http.statusCode != 401, (200...299).contains(http.statusCode) else { return nil }
-            if http.statusCode != 206, http.expectedContentLength > Int64(limit) { return nil }
-            return limit
+            Self.metadataBodyBudget(for: http, limit: limit)
         }
         guard http.statusCode != 401 else { throw LibrarySourceError.signInRequired }
         guard (200...299).contains(http.statusCode) else {
             throw LibrarySourceError.server(status: http.statusCode)
         }
-        if http.statusCode != 206, http.expectedContentLength > Int64(limit) {
+        if Self.metadataBodyBudget(for: http, limit: limit) == nil {
             throw LibrarySourceError.rangeNotSupported
         }
         LyraLog.webDAV.debug("Metadata range response status=\(http.statusCode) bytes=\(data.count)")
@@ -175,12 +173,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         // honoured the request, and it does so before any of the body is read,
         // so the budget below is the exact length the server promised.
         let (data, http) = try await body(for: request) { http in
-            guard http.statusCode == 206,
-                  let value = http.value(forHTTPHeaderField: "Content-Range"),
-                  let promised = HTTPContentRange.parse(value),
-                  promised.range.lowerBound == range.lowerBound,
-                  promised.range.upperBound <= range.upperBound
-            else { return nil }
+            guard let promised = Self.validatedContentRange(for: http, requested: range) else { return nil }
             return Int(promised.range.upperBound - promised.range.lowerBound)
         }
 
@@ -194,16 +187,22 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
             }
             throw LibrarySourceError.server(status: http.statusCode)
         }
-        guard let value = http.value(forHTTPHeaderField: "Content-Range"),
-              let contentRange = HTTPContentRange.parse(value),
-              contentRange.range.lowerBound == range.lowerBound,
-              contentRange.range.upperBound <= range.upperBound
-        else { throw LibrarySourceError.rangeNotSupported }
+        guard let contentRange = Self.validatedContentRange(for: http, requested: range) else {
+            throw LibrarySourceError.rangeNotSupported
+        }
 
         // RFC 9110 lets a server satisfy a range without knowing the complete
         // length and answer `/*`. The indexed size then stands in, because it
         // came from this same server's PROPFIND.
-        let totalLength = contentRange.totalLength ?? max(item.size, contentRange.range.upperBound)
+        let totalLength: Int64
+        if let completeLength = contentRange.totalLength {
+            totalLength = completeLength
+        } else {
+            guard item.size > 0, item.size >= contentRange.range.upperBound else {
+                throw LibrarySourceError.rangeNotSupported
+            }
+            totalLength = item.size
+        }
         guard totalLength >= contentRange.range.upperBound else {
             throw LibrarySourceError.rangeNotSupported
         }
@@ -219,6 +218,25 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
             totalLength: totalLength,
             mimeType: http.mimeType
         )
+    }
+
+    private static func metadataBodyBudget(for response: HTTPURLResponse, limit: Int) -> Int? {
+        guard response.statusCode != 401, (200...299).contains(response.statusCode) else { return nil }
+        if response.statusCode != 206, response.expectedContentLength > Int64(limit) { return nil }
+        return limit
+    }
+
+    private static func validatedContentRange(
+        for response: HTTPURLResponse,
+        requested: Range<Int64>
+    ) -> HTTPContentRange? {
+        guard response.statusCode == 206,
+              let value = response.value(forHTTPHeaderField: "Content-Range"),
+              let promised = HTTPContentRange.parse(value),
+              promised.range.lowerBound == requested.lowerBound,
+              promised.range.upperBound <= requested.upperBound
+        else { return nil }
+        return promised
     }
 
     /// Collects a response body in whole delegate chunks, stopping one byte

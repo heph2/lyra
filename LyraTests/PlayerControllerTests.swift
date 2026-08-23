@@ -438,6 +438,7 @@ struct PlayerControllerTests {
                 sourceID: "remote",
                 relativePath: "@remote/Album/Song.FLAC",
                 contentLength: 42_000,
+                duration: 0,
                 fileExtension: "flac"
             )
         ))
