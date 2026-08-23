@@ -32,6 +32,9 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      # A destination named by device implies OS=latest, and the runner image may only
+      # carry that device on an older runtime — which is how 'name=iPhone 16e' broke
+      # here. Resolve a UDID from what is actually installed instead.
       - name: Select iOS simulator
         id: simulator
         shell: bash
