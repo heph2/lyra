@@ -10,7 +10,7 @@ Read this before changing anything. Most of it was learned by breaking the app.
 
 These are not preferences. Violating them breaks the product or the build.
 
-- **Network code stays inside `WebDAVSource`.** `grep -rE "URLSession|dataTask|CFNetwork" Lyra` must only hit `Lyra/Model/WebDAVSource.swift` (plus the odd explanatory comment elsewhere). Nothing above it may know HTTP exists, and everything except remote indexing and offline downloads has to work fully in Airplane Mode.
+- **Network code stays inside `WebDAVSource`.** `grep -rE "URLSession|dataTask|CFNetwork" Lyra` must only hit `Lyra/Model/WebDAVSource.swift` (plus the odd explanatory comment elsewhere). Nothing above it may know HTTP exists, and everything except remote indexing, remote streaming, and offline downloads has to work fully in Airplane Mode.
 - **Diagnostics are local and privacy-safe.** `LyraLog` writes unified logs for Console only — no analytics, no backend. Passwords, server URLs, source names, and track paths must never reach a log line; log structural facts and `DiagnosticValue.errorCode(_:)` instead.
 - **No third-party dependencies.** Apple frameworks only: AVFoundation, SwiftUI, SwiftData, MediaPlayer, CryptoKit, ImageIO, OSLog, Security (Keychain), UniformTypeIdentifiers, UIKit, Combine, Foundation. Nothing else.
 - **Free-provisioning only.** SideStore signs with a free Apple ID, so no App Groups, no CloudKit, no push, no Sign in with Apple. Background audio works because it is an `Info.plist` key (`UIBackgroundModes: audio`), not a restricted entitlement. Adding a restricted entitlement makes the app unsignable.
@@ -72,6 +72,8 @@ Keeping drop-zone paths bare is deliberate: it means libraries and playlists wri
 **All SwiftData mutation happens in `LibraryStore`, a `@ModelActor`.** Tag parsing — the expensive part — runs in a bounded `TaskGroup` in `LibraryScanner`, off the model actor.
 
 **A remote library is indexed, not downloaded.** `WebDAVSource` walks the server with `PROPFIND` and writes tracks straight from that inventory; tags come from a bounded ranged `GET` of the front of each file (`metadataHeader(for:maxBytes:)`). A server that ignores `Range` degrades to path-derived metadata — it must never trigger a whole-library download.
+
+**Remote playback streams bounded ranges, it never lands a file.** `WebDAVAssetLoader` answers AVFoundation's resource-loading requests from `readRange(for:range:)`, a chunk at a time, over the same validated same-origin `Range` requests indexing uses. An offline copy always wins over a stream, and a server that refuses ranges must surface "download it" rather than fall back to pulling the whole file.
 
 **Offline copies are Lyra's, source files are the user's.** Downloads live under `Application Support/Libraries/<library-id>/Music/`, mirroring the remote relative path, and `OfflineLibrary` may delete them freely. Removing an offline copy or a WebDAV source must never issue a write to the server.
 

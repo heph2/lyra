@@ -12,6 +12,16 @@ final class WebDAVAssetLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     private let delegateQueue = DispatchQueue(label: "care.davinci.lyra.webdav-asset-loader")
     private let activeLock = NSLock()
     private var active: [ObjectIdentifier: ActiveRequest] = [:]
+    private var failure: LibrarySourceError?
+
+    /// AVFoundation reports every loader failure as a generic decode error, so
+    /// the reason has to be kept here or the player has nothing actionable to
+    /// say about a server that cannot be reached or cannot be streamed from.
+    var lastFailure: LibrarySourceError? {
+        activeLock.lock()
+        defer { activeLock.unlock() }
+        return failure
+    }
 
     init(source: any RemoteLibrarySource, resource: RemotePlaybackResource) {
         self.source = source
@@ -75,6 +85,12 @@ final class WebDAVAssetLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         _ loadingRequest: AVAssetResourceLoadingRequest,
         plan: RequestPlan
     ) async {
+        let item = ScannedFile(
+            relativePath: resource.relativePath,
+            size: resource.contentLength,
+            modified: .distantPast
+        )
+
         do {
             if plan.hasDataRequest {
                 var offset = plan.start
@@ -93,11 +109,6 @@ final class WebDAVAssetLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
                     )
                     guard upper > offset else { break }
 
-                    let item = ScannedFile(
-                        relativePath: resource.relativePath,
-                        size: resource.contentLength,
-                        modified: .distantPast
-                    )
                     let response = try await source.readRange(for: item, range: offset..<upper)
                     totalLength = response.totalLength
 
@@ -110,20 +121,11 @@ final class WebDAVAssetLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
                     )
                     suppliedContentInformation = true
                     offset = response.range.upperBound
-
-                    if !plan.requestsAllDataToEnd, let upperBound = plan.upperBound, offset >= upperBound {
-                        break
-                    }
                     if offset >= totalLength { break }
                 }
             } else {
                 // Content-information-only requests still need one byte-range
                 // probe to prove support and discover the authoritative length.
-                let item = ScannedFile(
-                    relativePath: resource.relativePath,
-                    size: resource.contentLength,
-                    modified: .distantPast
-                )
                 let response = try await source.readRange(for: item, range: 0..<1)
                 try await respond(
                     Data(),
@@ -140,6 +142,9 @@ final class WebDAVAssetLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         } catch {
             let code = DiagnosticValue.errorCode(error)
             LyraLog.playback.error("Remote playback load failed error=\(code, privacy: .public)")
+            if let reason = error as? LibrarySourceError {
+                activeLock.withLock { failure = reason }
+            }
             await finish(loadingRequest, error: error)
         }
     }

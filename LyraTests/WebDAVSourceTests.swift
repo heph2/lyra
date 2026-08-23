@@ -44,7 +44,7 @@ struct WebDAVSourceTests {
                 username: "marco"
             ),
             password: "secret",
-            session: URLSession(configuration: configuration)
+            sessionConfiguration: configuration
         )
     }
 
@@ -324,6 +324,28 @@ struct WebDAVSourceTests {
         #expect(response.totalLength == 4_096)
         #expect(response.mimeType == "audio/mpeg")
         #expect(response.data == Data(repeating: 7, count: 1_024))
+    }
+
+    @Test("A range answered without a complete length falls back to the indexed size")
+    func acceptsUnknownCompleteLength() async throws {
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 206,
+                body: Data(repeating: 3, count: 1_024),
+                headers: ["Content-Range": "bytes 0-1023/*"]
+            )
+        }
+
+        let item = ScannedFile(
+            relativePath: "@webdav-test/Album/song.flac",
+            size: 8_192,
+            modified: .now
+        )
+        let response = try await source().readRange(for: item, range: 0..<1_024)
+
+        #expect(response.range == 0..<1_024)
+        #expect(response.totalLength == 8_192)
+        #expect(response.data.count == 1_024)
     }
 
     @Test("Playback rejects a server that ignores byte ranges")

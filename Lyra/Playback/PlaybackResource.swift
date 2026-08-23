@@ -6,6 +6,11 @@ import Foundation
 enum PlaybackResource: Sendable, Equatable {
     case local(URL)
     case remote(RemotePlaybackResource)
+
+    var isRemote: Bool {
+        if case .remote = self { return true }
+        return false
+    }
 }
 
 struct RemotePlaybackResource: Sendable, Equatable {

@@ -497,13 +497,21 @@ final class PlayerController {
             self.next(userInitiated: false)
         }
 
-        engine.onError = { [weak self] message in
+        engine.onError = { [weak self] failure in
             guard let self, self.currentTrack != nil else { return }
             LyraLog.playback.error("Playback engine reported a track error")
+            // A library that cannot be reached fails every one of its tracks
+            // the same way, each paying its own network timeout, so the walk
+            // would be minutes of silence with nothing to act on at the end.
+            guard !failure.isSourceUnavailable else {
+                self.errorMessage = failure.message
+                self.finishQueue()
+                return
+            }
             // A single corrupt file should not stall the whole queue, and a
             // queue of them should not be walked forever.
             guard self.registerLoadFailure(
-                message,
+                failure.message,
                 whenQueueExhausted: Self.noTrackPlayable
             ) else { return }
             self.advance(.trackUnplayable)

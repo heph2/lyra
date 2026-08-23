@@ -9,7 +9,7 @@ import Testing
 @MainActor
 final class FakeEngine: PlaybackEngine {
     var onTrackFinished: (() -> Void)?
-    var onError: ((String) -> Void)?
+    var onError: ((PlaybackFailure) -> Void)?
     var onTimeUpdate: ((Double) -> Void)?
 
     private(set) var loadedResources: [PlaybackResource] = []
@@ -258,8 +258,26 @@ struct PlayerControllerTests {
         let (player, engine) = try makeController()
         player.play(tracks: tracks(3), startAt: 0)
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         #expect(player.currentTrack?.title == "Track 2")
+    }
+
+    @Test("An unreachable library stops the queue instead of timing out on every track")
+    func sourceFailureStopsQueue() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(5), startAt: 0)
+
+        engine.onError?(PlaybackFailure(
+            message: "This server can't be streamed from.",
+            isSourceUnavailable: true
+        ))
+
+        #expect(player.isPlaying == false)
+        #expect(player.errorMessage == "This server can't be streamed from.")
+        // The failure condemns every remaining track from the same library, so
+        // nothing after the first load may be attempted.
+        #expect(engine.loadedResources.count == 1)
     }
 
     @Test("A queue of unplayable files stops instead of looping under repeat-all")
@@ -268,7 +286,7 @@ struct PlayerControllerTests {
         player.repeatMode = .all
         player.play(tracks: tracks(3), startAt: 0)
 
-        for _ in 0..<4 { engine.onError?("Corrupt file") }
+        for _ in 0..<4 { engine.onError?(PlaybackFailure(message: "Corrupt file")) }
 
         #expect(player.isPlaying == false)
         #expect(player.errorMessage == "None of these tracks can be played right now.")
@@ -283,9 +301,9 @@ struct PlayerControllerTests {
         player.repeatMode = .all
         player.play(tracks: tracks(2), startAt: 0)
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         engine.onTimeUpdate?(5)
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
 
         #expect(player.currentTrack?.title == "Track 1")
         #expect(player.isPlaying)
@@ -313,12 +331,12 @@ struct PlayerControllerTests {
         player.repeatMode = .all
         player.play(tracks: tracks(2), startAt: 0)
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         // No time update: a file short enough to finish inside one observer
         // tick never reports a non-zero position.
         engine.finishTrack()
-        engine.onError?("Corrupt file")
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
 
         #expect(player.currentTrack?.title == "Track 1")
         #expect(player.isPlaying)
@@ -333,10 +351,10 @@ struct PlayerControllerTests {
         // A zero-length or audio-less file reaches its end at position 0.
         engine.duration = 0
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         engine.finishTrack()
-        engine.onError?("Corrupt file")
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
 
         #expect(player.isPlaying == false)
         #expect(player.errorMessage == "None of these tracks can be played right now.")
