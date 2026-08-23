@@ -82,9 +82,9 @@ final class LyraUITests: XCTestCase {
 
     // MARK: - WebDAV
 
-    /// Adds the WebDAV library through the real form, then keeps an album
-    /// offline through the real context menu. The host-side access log is what
-    /// proves indexing did not download the library.
+    /// Adds the WebDAV library through the real form, streams a cloud-only
+    /// track, then keeps its album offline through the real context menu. The
+    /// host-side access log distinguishes ranged playback from the full copy.
     func testWebDAVLibraryIndexesRemotelyThenDownloadsSelection() {
         XCTAssertTrue(waitForText("Library", timeout: 30))
 
@@ -143,26 +143,49 @@ final class LyraUITests: XCTestCase {
         XCTAssertTrue(app.images["Available remotely"].firstMatch.exists,
                       "remote track is missing its cloud indicator")
 
+        // Play before requesting an offline copy. A visible elapsed time proves
+        // AVFoundation decoded remote bytes; the transport alone appears as
+        // soon as the controller creates its queue and is not enough evidence.
+        app.staticTexts["Event Horizon"].firstMatch.tap()
+        let nowPlaying = app.buttons["Now Playing"]
+        XCTAssertTrue(nowPlaying.waitForExistence(timeout: 20), "streaming transport never appeared")
+        nowPlaying.tap()
+        XCTAssertTrue(app.staticTexts["Event Horizon"].waitForExistence(timeout: 20))
+        let elapsed = app.staticTexts.matching(
+            NSPredicate(format: "label MATCHES '0:0[1-9]'")
+        ).firstMatch
+        XCTAssertTrue(elapsed.waitForExistence(timeout: 30), "remote stream never advanced")
+        capture("13-streaming-cloud-only-track")
+        let pauseButtons = app.buttons.matching(identifier: "Pause")
+        for index in 0..<pauseButtons.count {
+            let button = pauseButtons.element(boundBy: index)
+            if button.isHittable {
+                button.tap()
+                break
+            }
+        }
+        app.navigationBars.buttons["Done"].firstMatch.tap()
+
         selectSection("Albums")
         XCTAssertTrue(app.staticTexts["Deep Field"].waitForExistence(timeout: 30))
-        capture("13-albums-local-and-remote")
+        capture("14-albums-local-and-remote")
 
         // Keep the whole remote album offline, through the context menu a user
         // would actually long-press.
         app.staticTexts["Deep Field"].firstMatch.press(forDuration: 1.2)
         let download = app.buttons.containing(NSPredicate(format: "label BEGINSWITH 'Download'")).firstMatch
         XCTAssertTrue(download.waitForExistence(timeout: 15), "album context menu had no download action")
-        capture("14-offline-context-menu")
+        capture("15-offline-context-menu")
         download.tap()
 
         selectSection("Songs")
         let offline = app.images["Available offline"].firstMatch
         XCTAssertTrue(offline.waitForExistence(timeout: 180), "album never finished downloading for offline use")
-        capture("15-offline-downloaded")
+        capture("16-offline-downloaded")
 
         // Play a remote track from the offline copy.
         app.staticTexts["Event Horizon"].firstMatch.tap()
-        capture("16-playing-remote-track")
+        capture("17-playing-offline-track")
     }
 
     /// A wrong password has to fail as a message in the form, not a crash.

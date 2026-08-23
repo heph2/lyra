@@ -132,11 +132,13 @@ Playback resolves to the local copy when present. Phase 3.5 adds on-demand netwo
 
 ---
 
-## Phase 3.5 — WebDAV streaming · planned
+## Phase 3.5 — WebDAV streaming · in progress
 
 Play an indexed WebDAV track without first keeping a complete copy on the device. Offline selection remains explicit and always wins: if a valid offline copy exists, playback must use it and perform no network request.
 
 This is authenticated progressive playback, not a general streaming service. Lyra still has no account or backend, does not transcode, and does not silently turn streamed tracks into offline copies.
+
+The first vertical slice is implemented: playback resolves local copies before remote descriptors, `WebDAVSource` validates bounded authenticated ranges, and an `AVAssetResourceLoaderDelegate` feeds those ranges to AVFoundation without creating an offline file. Unit coverage exercises the HTTP contract and a real AVFoundation load; the simulator WebDAV flow proves a cloud-only track advances before the user selects its album for offline use. Buffering UI, explicit download-first errors, seek/cancellation instrumentation, and the physical-device release gates below remain.
 
 ### 3.5.0 Prove the server contract
 

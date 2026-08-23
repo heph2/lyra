@@ -12,13 +12,19 @@ final class FakeEngine: PlaybackEngine {
     var onError: ((String) -> Void)?
     var onTimeUpdate: ((Double) -> Void)?
 
-    private(set) var loadedURLs: [URL] = []
+    private(set) var loadedResources: [PlaybackResource] = []
+    var loadedURLs: [URL] {
+        loadedResources.compactMap {
+            guard case .local(let url) = $0 else { return nil }
+            return url
+        }
+    }
     var isPlaying = false
     var currentTime: Double = 0
     var duration: Double = 200
 
-    func load(url: URL, autoplay: Bool) {
-        loadedURLs.append(url)
+    func load(resource: PlaybackResource, autoplay: Bool) {
+        loadedResources.append(resource)
         currentTime = 0
         isPlaying = autoplay
     }
@@ -373,5 +379,50 @@ struct PlayerControllerTests {
 
         player.seek(to: 99_999)
         #expect(player.currentTime == player.duration)
+    }
+
+    @Test("Playback resolution prefers a local copy over a remote stream")
+    func playbackResolutionPrefersLocalCopy() {
+        let track = Track(
+            relativePath: "@remote/Album/Song.FLAC",
+            title: "Song",
+            fileSize: 42_000
+        )
+        let source = MusicSource(
+            id: "remote",
+            displayName: "Server",
+            kind: .webDAV,
+            serverURL: "https://server.example/music/",
+            username: "listener"
+        )
+        let local = URL(filePath: "/tmp/Song.FLAC")
+
+        #expect(PlaybackResourceResolver.resolve(track: track, localURL: local, source: source) == .local(local))
+    }
+
+    @Test("A remote-only track resolves to a non-secret stream descriptor")
+    func playbackResolutionBuildsRemoteDescriptor() {
+        let track = Track(
+            relativePath: "@remote/Album/Song.FLAC",
+            title: "Song",
+            fileSize: 42_000
+        )
+        let source = MusicSource(
+            id: "remote",
+            displayName: "Server",
+            kind: .webDAV,
+            serverURL: "https://server.example/music/",
+            username: "listener"
+        )
+
+        #expect(PlaybackResourceResolver.resolve(track: track, localURL: nil, source: source) == .remote(
+            RemotePlaybackResource(
+                sourceID: "remote",
+                relativePath: "@remote/Album/Song.FLAC",
+                contentLength: 42_000,
+                fileExtension: "flac"
+            )
+        ))
+        #expect(PlaybackResourceResolver.resolve(track: track, localURL: nil, source: nil) == nil)
     }
 }

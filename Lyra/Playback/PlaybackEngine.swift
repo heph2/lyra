@@ -18,7 +18,7 @@ protocol PlaybackEngine: AnyObject {
     /// Fired on every periodic time update, for UI and Now Playing sync.
     var onTimeUpdate: ((Double) -> Void)? { get set }
 
-    func load(url: URL, autoplay: Bool)
+    func load(resource: PlaybackResource, autoplay: Bool)
     func play()
     func pause()
     func seek(to seconds: Double)
@@ -41,6 +41,7 @@ final class AVPlayerEngine: PlaybackEngine {
     private var timeObserver: Any?
     private var endObserver: (any NSObjectProtocol)?
     private var statusObservation: NSKeyValueObservation?
+    private var webDAVLoader: WebDAVAssetLoader?
 
     /// Cached because `AVPlayerItem.duration` is unknown until the asset loads,
     /// and the UI needs a stable value to lay out the scrubber.
@@ -74,9 +75,28 @@ final class AVPlayerEngine: PlaybackEngine {
 
     var duration: Double { loadedDuration }
 
-    func load(url: URL, autoplay: Bool) {
-        // Local files only: no buffering, no network, so a plain item is fine.
-        let asset = AVURLAsset(url: url)
+    func load(resource: PlaybackResource, autoplay: Bool) {
+        webDAVLoader?.cancelAll()
+        webDAVLoader = nil
+
+        let asset: AVURLAsset
+        switch resource {
+        case .local(let url):
+            asset = AVURLAsset(url: url)
+        case .remote(let remote):
+            guard let source = LibraryManager.shared.remoteSource(for: remote.sourceID) else {
+                loadedDuration = 0
+                loadToken += 1
+                player.replaceCurrentItem(with: nil)
+                Task { @MainActor [weak self] in
+                    self?.onError?("This WebDAV library can't be reached right now.")
+                }
+                return
+            }
+            let loader = WebDAVAssetLoader(source: source, resource: remote)
+            asset = loader.makeAsset()
+            webDAVLoader = loader
+        }
         let item = AVPlayerItem(asset: asset)
 
         loadedDuration = 0
@@ -111,6 +131,8 @@ final class AVPlayerEngine: PlaybackEngine {
         // status hop already in flight would otherwise report a duration or a
         // failure for an item this player no longer has.
         loadToken += 1
+        webDAVLoader?.cancelAll()
+        webDAVLoader = nil
         player.replaceCurrentItem(with: nil)
         loadedDuration = 0
     }

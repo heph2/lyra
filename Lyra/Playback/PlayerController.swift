@@ -366,15 +366,8 @@ final class PlayerController {
             // unplugged, a permission revoked. Skip it rather than stalling,
             // but give up once we have tried the whole queue, or an unreachable
             // folder plus repeat-all would spin forever.
-            guard let url = track.fileURL else {
-                if LibraryManager.shared.source(for: track.sourceID)?.isRemote == true {
-                    LyraLog.playback.notice("Playback blocked because remote track is not offline")
-                    errorMessage = "\(track.title) has not been downloaded yet. "
-                        + "Long-press it and choose Download Offline to play it."
-                    finishQueue()
-                    return
-                }
-                LyraLog.playback.notice("Playback skipped unreachable local track")
+            guard let resource = track.playbackResource else {
+                LyraLog.playback.notice("Playback skipped unreachable track")
                 skipped += 1
                 guard registerLoadFailure(
                     "\(track.title) is in a folder Lyra can't reach right now.",
@@ -389,7 +382,7 @@ final class PlayerController {
             duration = track.duration
 
             session.activate()
-            engine.load(url: url, autoplay: autoplay)
+            engine.load(resource: resource, autoplay: autoplay)
             isPlaying = autoplay
 
             nowPlaying.update(track: track, isPlaying: autoplay, elapsed: 0, duration: track.duration)
