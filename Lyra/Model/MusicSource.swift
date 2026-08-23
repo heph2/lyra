@@ -58,7 +58,15 @@ protocol RemoteLibrarySource: LibrarySource {
     /// indexing a remote library means paying for every byte, so the scanner
     /// asks for the smallest prefix that answers its question.
     func metadataHeader(for item: ScannedFile, maxBytes: Int) async throws -> Data
+    func readRange(for item: ScannedFile, range: Range<Int64>) async throws -> RemoteByteRangeResponse
     func download(_ item: ScannedFile, to destination: URL) async throws
+}
+
+struct RemoteByteRangeResponse: Sendable, Equatable {
+    let data: Data
+    let range: Range<Int64>
+    let totalLength: Int64
+    let mimeType: String?
 }
 
 struct LibrarySourceAvailability: Sendable, Equatable {
@@ -91,7 +99,7 @@ enum LibrarySourceError: LocalizedError, Sendable, Equatable {
         case .invalidConfiguration: "The library configuration is invalid."
         case .signInRequired: "Sign in again to this WebDAV library."
         case .notWebDAVServer: "This server did not return a WebDAV response."
-        case .rangeNotSupported: "This server does not support metadata range reads."
+        case .rangeNotSupported: "This server does not support the byte ranges Lyra needs."
         case .scanLimitReached: "This library has more folders than Lyra can index, or its folders link back into themselves."
         case .server(let status): "The server returned HTTP \(status)."
         }

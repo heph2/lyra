@@ -66,11 +66,14 @@ run_group() {
   local only=()
   for t in "$@"; do only+=("-only-testing:LyraUITests/LyraUITests/$t"); done
   log "running group: $name"
+  set +e
   xcodebuild test-without-building \
     -project Lyra.xcodeproj -scheme LyraUITests \
     -destination "platform=iOS Simulator,name=$DEVICE" \
     -derivedDataPath "$DD" "${only[@]}" -resultBundlePath "$bundle" \
-    | grep -E "Test Case|XCTAssert|error:" || true
+    | grep -E "Test Case|XCTAssert|error:"
+  local test_status="${PIPESTATUS[0]}"
+  set -e
   python3 scripts/uitest/collect-screenshots.py "$bundle" "$EVIDENCE"
   # Each group gets a fresh container, so record what Lyra left in its offline
   # cache before the next reset_app throws the container away.
@@ -85,6 +88,7 @@ run_group() {
       echo "cached audio files: 0 (directory absent)"
     fi
   } > "build/uitest-$name-offline-cache.txt"
+  return "$test_status"
 }
 
 [[ -d "$MEDIA" ]] || bash scripts/uitest/make-test-media.sh "$MEDIA"
@@ -107,17 +111,27 @@ run_group local testLocalLibraryIndexesDroppedFolders testArtistsAndFolderBrowsi
 start_server 0 build/webdav-access-index.jsonl
 reset_app
 run_group webdav testWebDAVLibraryIndexesRemotelyThenDownloadsSelection
+python3 scripts/uitest/verify-streaming-log.py build/webdav-access-index.jsonl
 
 start_server 0 build/webdav-access-badcreds.jsonl
 reset_app
 run_group badcreds testWebDAVRejectsBadCredentials
+
+# A server that answers every GET with the whole file cannot be streamed from.
+# Exported rather than prefixed onto the call so the value reaches the server
+# process, not just the shell function.
+export LYRA_DAV_IGNORE_RANGE=1
+start_server 0 build/webdav-access-norange.jsonl
+reset_app
+run_group norange testStreamingRefusalTellsTheUserToDownloadInstead
+unset LYRA_DAV_IGNORE_RANGE
 
 start_server 0 build/webdav-access-preserve.jsonl
 reset_app
 run_group preserve testRemovingOfflineCopiesAndSourceLeavesUserFilesAlone
 
 # The progress card needs a server slow enough to photograph mid-scan.
-start_server 1.0 build/webdav-access-slow.jsonl
+start_server 5.0 build/webdav-access-slow.jsonl
 reset_app
 run_group progress testScanProgressCardIsVisibleWhileIndexing
 

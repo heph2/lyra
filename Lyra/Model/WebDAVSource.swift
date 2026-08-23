@@ -6,14 +6,49 @@ import Foundation
 final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     let configuration: MusicSource
     private let rootURL: URL
+    private let origin: WebDAVOrigin
     private let session: URLSession
+    private let sessionDelegate: WebDAVSessionDelegate
+    private let ownsSession: Bool
     private let suppliedPassword: String?
 
-    init(configuration: MusicSource, password: String? = nil, session: URLSession = .shared) {
+    /// A source is built per request — once per file while indexing, once per
+    /// offline download — so the session is shared per origin rather than
+    /// owned. A session per source meant a connection pool and a TLS handshake
+    /// per track, with no keep-alive between them.
+    init(
+        configuration: MusicSource,
+        password: String? = nil,
+        sessionConfiguration: URLSessionConfiguration? = nil
+    ) {
         self.configuration = configuration
-        self.rootURL = Self.normalizedRootURL(configuration.serverURL)
-        self.session = session
+        let rootURL = Self.normalizedRootURL(configuration.serverURL)
+        self.rootURL = rootURL
+        let origin = WebDAVOrigin(rootURL)
+        self.origin = origin
         self.suppliedPassword = password
+
+        if let sessionConfiguration {
+            let delegate = WebDAVSessionDelegate(origin: origin)
+            self.session = URLSession(
+                configuration: sessionConfiguration,
+                delegate: delegate,
+                delegateQueue: nil
+            )
+            self.sessionDelegate = delegate
+            self.ownsSession = true
+        } else {
+            let shared = WebDAVSessionStore.shared.session(for: origin)
+            self.session = shared.session
+            self.sessionDelegate = shared.delegate
+            self.ownsSession = false
+        }
+    }
+
+    deinit {
+        if ownsSession {
+            session.invalidateAndCancel()
+        }
     }
 
     var id: String { configuration.id }
@@ -25,6 +60,11 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     private static let maxDepth = 24
     private static let maxDirectories = 20_000
     private static let maxFiles = 200_000
+    private static let maxPlaybackRangeBytes: Int64 = 1_048_576
+    /// A stalled playback range has to fail fast. `PlayerController` walks to
+    /// the next track when a load fails, and the default minute-long timeout
+    /// turns one unreachable server into minutes of apparent silence.
+    private static let playbackRangeTimeout: TimeInterval = 15
 
     func scan() async throws -> [ScannedFile] {
         var pending = [(url: rootURL, depth: 0)]
@@ -84,31 +124,20 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         var request = try authenticatedRequest(url: requestURL, method: "GET")
         request.setValue("bytes=0-\(limit - 1)", forHTTPHeaderField: "Range")
 
-        let (stream, response) = try await requestBytes(request)
-        // Every exit before the body is read has to cancel the task, or the
-        // session keeps pulling the whole file down for a response we already
-        // rejected — a 401 library would do that once per track.
-        guard let http = response as? HTTPURLResponse else {
-            stream.task.cancel()
-            throw LibrarySourceError.unavailable
+        // Declining the body from the headers is what keeps a rejected response
+        // from pulling the whole file down — a 401 library, or a server whose
+        // declared length past the budget proves it ignored `Range`, would
+        // otherwise do that once per track.
+        let (data, http) = try await body(for: request) { http in
+            Self.metadataBodyBudget(for: http, limit: limit)
         }
-        guard http.statusCode != 401 else {
-            stream.task.cancel()
-            throw LibrarySourceError.signInRequired
-        }
+        guard http.statusCode != 401 else { throw LibrarySourceError.signInRequired }
         guard (200...299).contains(http.statusCode) else {
-            stream.task.cancel()
             throw LibrarySourceError.server(status: http.statusCode)
         }
-        // A declared length past the budget on a non-partial response is the
-        // range-ignoring server the byte loop exists to catch, and the headers
-        // prove it before a single byte of the body is read.
-        if http.statusCode != 206, http.expectedContentLength > Int64(limit) {
-            stream.task.cancel()
+        if Self.metadataBodyBudget(for: http, limit: limit) == nil {
             throw LibrarySourceError.rangeNotSupported
         }
-
-        let data = try await prefix(of: stream, limit: limit, declared: http.expectedContentLength)
         LyraLog.webDAV.debug("Metadata range response status=\(http.statusCode) bytes=\(data.count)")
         if http.statusCode == 206 { return data.count > limit ? Data(data.prefix(limit)) : data }
         // A file smaller than the requested range legitimately comes back whole
@@ -118,34 +147,129 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         return data
     }
 
-    /// Reads one byte past the budget and stops. That extra byte is what proves
-    /// the server ignored `Range`, and stopping there keeps a whole album out of
-    /// memory — six of these run concurrently during a scan.
+    func readRange(
+        for item: ScannedFile,
+        range: Range<Int64>
+    ) async throws -> RemoteByteRangeResponse {
+        let count = range.upperBound - range.lowerBound
+        guard range.lowerBound >= 0,
+              count > 0,
+              count <= Self.maxPlaybackRangeBytes
+        else { throw LibrarySourceError.invalidConfiguration }
+
+        var request = try authenticatedRequest(url: try url(for: item), method: "GET")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = Self.playbackRangeTimeout
+        // Byte offsets describe the stored audio file, not a compressed HTTP
+        // representation. Asking intermediaries for identity encoding keeps
+        // Content-Range and the bytes handed to AVFoundation in agreement.
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(
+            "bytes=\(range.lowerBound)-\(range.upperBound - 1)",
+            forHTTPHeaderField: "Range"
+        )
+
+        // A validated `Content-Range` on a 206 is what proves the server
+        // honoured the request, and it does so before any of the body is read,
+        // so the budget below is the exact length the server promised.
+        let (data, http) = try await body(for: request) { http in
+            guard let promised = Self.validatedContentRange(for: http, requested: range) else { return nil }
+            return Int(promised.range.upperBound - promised.range.lowerBound)
+        }
+
+        guard let responseURL = http.url, isSameOrigin(responseURL) else {
+            throw LibrarySourceError.unavailable
+        }
+        if http.statusCode == 401 { throw LibrarySourceError.signInRequired }
+        guard http.statusCode == 206 else {
+            if (200...299).contains(http.statusCode) {
+                throw LibrarySourceError.rangeNotSupported
+            }
+            throw LibrarySourceError.server(status: http.statusCode)
+        }
+        guard let contentRange = Self.validatedContentRange(for: http, requested: range) else {
+            throw LibrarySourceError.rangeNotSupported
+        }
+
+        // RFC 9110 lets a server satisfy a range without knowing the complete
+        // length and answer `/*`. The indexed size then stands in, because it
+        // came from this same server's PROPFIND.
+        let totalLength: Int64
+        if let completeLength = contentRange.totalLength {
+            totalLength = completeLength
+        } else {
+            guard item.size > 0, item.size >= contentRange.range.upperBound else {
+                throw LibrarySourceError.rangeNotSupported
+            }
+            totalLength = item.size
+        }
+        guard totalLength >= contentRange.range.upperBound else {
+            throw LibrarySourceError.rangeNotSupported
+        }
+
+        let expected = contentRange.range.upperBound - contentRange.range.lowerBound
+        guard Int64(data.count) == expected else { throw LibrarySourceError.unavailable }
+        LyraLog.webDAV.debug(
+            "Playback range response status=206 requested=\(count) delivered=\(data.count)"
+        )
+        return RemoteByteRangeResponse(
+            data: data,
+            range: contentRange.range,
+            totalLength: totalLength,
+            mimeType: http.mimeType
+        )
+    }
+
+    private static func metadataBodyBudget(for response: HTTPURLResponse, limit: Int) -> Int? {
+        guard response.statusCode != 401, (200...299).contains(response.statusCode) else { return nil }
+        if response.statusCode != 206, response.expectedContentLength > Int64(limit) { return nil }
+        return limit
+    }
+
+    private static func validatedContentRange(
+        for response: HTTPURLResponse,
+        requested: Range<Int64>
+    ) -> HTTPContentRange? {
+        guard response.statusCode == 206,
+              let value = response.value(forHTTPHeaderField: "Content-Range"),
+              let promised = HTTPContentRange.parse(value),
+              promised.range.lowerBound == requested.lowerBound,
+              promised.range.upperBound <= requested.upperBound
+        else { return nil }
+        return promised
+    }
+
+    /// Collects a response body in whole delegate chunks, stopping one byte
+    /// past the budget the headers earned. That extra byte is what proves the
+    /// server ignored `Range`; bounding it a `UInt8` at a time was affordable
+    /// for a one-shot metadata prefix and is not for every chunk of a streamed
+    /// track.
     ///
-    /// `declared` is the response's content length, already checked against the
-    /// budget by the caller, or negative when the server sent none. Reserving
-    /// against it keeps an eight-byte file from committing the whole 1 MB
-    /// artwork budget up front; only a length-less chunked body pays for the
-    /// ceiling.
-    private func prefix(
-        of stream: URLSession.AsyncBytes,
-        limit: Int,
-        declared: Int64
-    ) async throws -> Data {
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(declared >= 0 ? Int(min(declared, Int64(limit))) + 1 : limit + 1)
+    /// `budget` runs on the response headers before any body arrives. Returning
+    /// `nil` declines the body entirely and hands the caller the headers to map
+    /// into an error.
+    private func body(
+        for request: URLRequest,
+        budget: @escaping @Sendable (HTTPURLResponse) -> Int?
+    ) async throws -> (Data, HTTPURLResponse) {
+        let transfer = BoundedBodyTransfer(budget: budget)
+        let task = session.dataTask(with: request)
+        sessionDelegate.begin(transfer, for: task)
         do {
-            for try await byte in stream {
-                bytes.append(byte)
-                if bytes.count > limit { break }
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    transfer.attach(continuation)
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
             }
         } catch {
+            if Self.isCancellation(error) { throw CancellationError() }
             let code = DiagnosticValue.errorCode(error)
             LyraLog.webDAV.error("WebDAV body read failed error=\(code, privacy: .public)")
             throw LibrarySourceError.unavailable
         }
-        stream.task.cancel()
-        return Data(bytes)
     }
 
     func download(_ item: ScannedFile, to destination: URL) async throws {
@@ -215,16 +339,6 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         }
     }
 
-    private func requestBytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
-        do {
-            return try await session.bytes(for: request)
-        } catch {
-            let code = DiagnosticValue.errorCode(error)
-            LyraLog.webDAV.error("WebDAV request failed error=\(code, privacy: .public)")
-            throw LibrarySourceError.unavailable
-        }
-    }
-
     private func url(for item: ScannedFile) throws -> URL {
         let split = AudioFile.split(trackPath: item.relativePath)
         guard split.sourceID == id,
@@ -244,14 +358,15 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         guard !href.isEmpty, let target = URL(string: href, relativeTo: base)?.absoluteURL else {
             return nil
         }
-        guard target.scheme?.lowercased() == rootURL.scheme?.lowercased(),
-              target.host?.lowercased() == rootURL.host?.lowercased(),
-              Self.effectivePort(target) == Self.effectivePort(rootURL)
-        else {
+        guard isSameOrigin(target) else {
             LyraLog.webDAV.error("Dropped a WebDAV href pointing outside the configured server")
             return nil
         }
         return target
+    }
+
+    private func isSameOrigin(_ target: URL) -> Bool {
+        WebDAVOrigin(target) == origin
     }
 
     /// Server hrefs may be absolute or relative and retain percent encoding.
@@ -265,13 +380,9 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         return String(targetPath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    private static func effectivePort(_ url: URL) -> Int? {
-        if let port = url.port { return port }
-        switch url.scheme?.lowercased() {
-        case "https": return 443
-        case "http": return 80
-        default: return nil
-        }
+    private static func isCancellation(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
     }
 
     /// A collection href may arrive without its trailing slash. Restoring it
@@ -291,6 +402,230 @@ private struct WebDAVResponse: Sendable {
     var isCollection = false
     var size: Int64 = 0
     var modified: Date = .distantPast
+}
+
+private struct WebDAVOrigin: Sendable, Hashable {
+    let scheme: String?
+    let host: String?
+    let port: Int?
+
+    init(_ url: URL) {
+        scheme = url.scheme?.lowercased()
+        host = url.host?.lowercased()
+        if let explicit = url.port {
+            port = explicit
+        } else {
+            switch scheme {
+            case "https": port = 443
+            case "http": port = 80
+            default: port = nil
+            }
+        }
+    }
+}
+
+/// One session per origin, kept for the life of the process. Sessions are the
+/// connection pool: rebuilding one per `WebDAVSource` meant a fresh TLS
+/// handshake for every indexed track.
+private final class WebDAVSessionStore: @unchecked Sendable {
+    static let shared = WebDAVSessionStore()
+
+    private let lock = NSLock()
+    private var sessions: [WebDAVOrigin: (session: URLSession, delegate: WebDAVSessionDelegate)] = [:]
+
+    func session(for origin: WebDAVOrigin) -> (session: URLSession, delegate: WebDAVSessionDelegate) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = sessions[origin] { return existing }
+
+        let delegate = WebDAVSessionDelegate(origin: origin)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        sessions[origin] = (session, delegate)
+        return (session, delegate)
+    }
+}
+
+/// Accumulates one bounded response body. The lock is what makes it safe to
+/// hand to URLSession's delegate queue while the caller awaits it.
+private final class BoundedBodyTransfer: @unchecked Sendable {
+    private let budget: @Sendable (HTTPURLResponse) -> Int?
+    private let lock = NSLock()
+    private var limit: Int?
+    private var buffer = Data()
+    private var response: HTTPURLResponse?
+    /// Set when we stopped the transfer ourselves, so the cancellation that
+    /// follows is the expected end of a successful read rather than a failure.
+    private var stopped = false
+    private var continuation: CheckedContinuation<(Data, HTTPURLResponse), any Error>?
+    private var outcome: Result<(Data, HTTPURLResponse), any Error>?
+
+    init(budget: @escaping @Sendable (HTTPURLResponse) -> Int?) {
+        self.budget = budget
+    }
+
+    func attach(_ continuation: CheckedContinuation<(Data, HTTPURLResponse), any Error>) {
+        lock.lock()
+        if let outcome {
+            lock.unlock()
+            continuation.resume(with: outcome)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func allow(_ response: HTTPURLResponse) -> Bool {
+        lock.lock()
+        self.response = response
+        guard let allowance = budget(response) else {
+            stopped = true
+            lock.unlock()
+            return false
+        }
+        limit = allowance
+        buffer.reserveCapacity(allowance + 1)
+        lock.unlock()
+        return true
+    }
+
+    func append(_ data: Data) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped, let limit else { return false }
+        let room = limit + 1 - buffer.count
+        guard room > 0 else {
+            stopped = true
+            return false
+        }
+        buffer.append(data.count <= room ? data : data.prefix(room))
+        if buffer.count > limit {
+            stopped = true
+            return false
+        }
+        return true
+    }
+
+    func finish(_ error: (any Error)?) {
+        lock.lock()
+        let result: Result<(Data, HTTPURLResponse), any Error>
+        if let response, stopped || error == nil {
+            result = .success((buffer, response))
+        } else {
+            result = .failure(error ?? LibrarySourceError.unavailable)
+        }
+        outcome = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
+private final class WebDAVSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let origin: WebDAVOrigin
+    private let lock = NSLock()
+    private var transfers: [ObjectIdentifier: BoundedBodyTransfer] = [:]
+
+    init(origin: WebDAVOrigin) {
+        self.origin = origin
+    }
+
+    func begin(_ transfer: BoundedBodyTransfer, for task: URLSessionTask) {
+        lock.lock()
+        transfers[ObjectIdentifier(task)] = transfer
+        lock.unlock()
+    }
+
+    private func transfer(for task: URLSessionTask) -> BoundedBodyTransfer? {
+        lock.lock()
+        defer { lock.unlock() }
+        return transfers[ObjectIdentifier(task)]
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let transfer = transfer(for: dataTask) else {
+            completionHandler(.allow)
+            return
+        }
+        guard let http = response as? HTTPURLResponse else {
+            completionHandler(.cancel)
+            return
+        }
+        completionHandler(transfer.allow(http) ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let transfer = transfer(for: dataTask) else { return }
+        if !transfer.append(data) { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        lock.lock()
+        let transfer = transfers.removeValue(forKey: ObjectIdentifier(task))
+        lock.unlock()
+        transfer?.finish(error)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let target = request.url, WebDAVOrigin(target) == origin else {
+            LyraLog.webDAV.error("Blocked a WebDAV redirect outside the configured server")
+            completionHandler(nil)
+            return
+        }
+
+        var request = request
+        if let authorization = task.originalRequest?.value(forHTTPHeaderField: "Authorization") {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        completionHandler(request)
+    }
+}
+
+private struct HTTPContentRange: Sendable, Equatable {
+    let range: Range<Int64>
+    /// `nil` for the `/*` a server sends when it can satisfy the range without
+    /// knowing the complete length. RFC 9110 allows it, so refusing to parse it
+    /// would make such a server unstreamable even though every range works.
+    let totalLength: Int64?
+
+    static func parse(_ value: String) -> HTTPContentRange? {
+        let unitAndValue = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard unitAndValue.count == 2, unitAndValue[0].lowercased() == "bytes" else { return nil }
+
+        let boundsAndTotal = unitAndValue[1].split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard boundsAndTotal.count == 2 else { return nil }
+        let total: Int64?
+        if boundsAndTotal[1] == "*" {
+            total = nil
+        } else {
+            guard let parsed = Int64(boundsAndTotal[1]), parsed > 0 else { return nil }
+            total = parsed
+        }
+
+        let bounds = boundsAndTotal[0].split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        guard bounds.count == 2,
+              let lower = Int64(bounds[0]),
+              let inclusiveUpper = Int64(bounds[1]),
+              lower >= 0,
+              inclusiveUpper >= lower,
+              inclusiveUpper < Int64.max
+        else { return nil }
+        return HTTPContentRange(range: lower..<(inclusiveUpper + 1), totalLength: total)
+    }
 }
 
 /// `XMLParser` reports element names differently across servers. Matching the

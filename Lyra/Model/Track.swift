@@ -89,10 +89,20 @@ final class Track {
 }
 
 extension Track {
-    /// A selected remote copy wins over the source URL. Remote-only tracks
-    /// remain nil here because streaming is intentionally not supported.
+    /// A selected remote copy wins over the source URL. This remains a local-
+    /// file-only helper for metadata refresh and offline reconciliation.
     var fileURL: URL? {
         OfflineLibrary.localURL(for: self) ?? LibraryManager.shared.url(forTrackPath: relativePath)
+    }
+
+    /// Resolves as late as possible because an offline download or external
+    /// folder can appear or disappear after the track was queued.
+    var playbackResource: PlaybackResource? {
+        PlaybackResourceResolver.resolve(
+            track: self,
+            localURL: fileURL,
+            source: LibraryManager.shared.source(for: sourceID)
+        )
     }
 
     /// Path within its own source, without the `@id` prefix.

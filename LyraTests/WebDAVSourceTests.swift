@@ -44,7 +44,7 @@ struct WebDAVSourceTests {
                 username: "marco"
             ),
             password: "secret",
-            session: URLSession(configuration: configuration)
+            sessionConfiguration: configuration
         )
     }
 
@@ -293,6 +293,131 @@ struct WebDAVSourceTests {
         let item = ScannedFile(relativePath: "@webdav-test/Album/song.mp3", size: 8, modified: .now)
         let header = try await source().metadataHeader(for: item, maxBytes: 1_024)
         #expect(header == Data("ID3 tiny".utf8))
+    }
+
+    @Test("Playback ranges validate offsets, total length, and MIME type")
+    func readsPlaybackRange() async throws {
+        WebDAVURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path(percentEncoded: false) == "/music/Album/one song.mp3")
+            #expect(request.value(forHTTPHeaderField: "Range") == "bytes=1024-2047")
+            #expect(request.value(forHTTPHeaderField: "Accept-Encoding") == "identity")
+            #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
+            return .init(
+                status: 206,
+                body: Data(repeating: 7, count: 1_024),
+                headers: [
+                    "Content-Range": "bytes 1024-2047/4096",
+                    "Content-Type": "audio/mpeg",
+                ]
+            )
+        }
+
+        let item = ScannedFile(
+            relativePath: "@webdav-test/Album/one song.mp3",
+            size: 4_096,
+            modified: .now
+        )
+        let response = try await source().readRange(for: item, range: 1_024..<2_048)
+
+        #expect(response.range == 1_024..<2_048)
+        #expect(response.totalLength == 4_096)
+        #expect(response.mimeType == "audio/mpeg")
+        #expect(response.data == Data(repeating: 7, count: 1_024))
+    }
+
+    @Test("A range answered without a complete length falls back to the indexed size")
+    func acceptsUnknownCompleteLength() async throws {
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 206,
+                body: Data(repeating: 3, count: 1_024),
+                headers: ["Content-Range": "bytes 0-1023/*"]
+            )
+        }
+
+        let item = ScannedFile(
+            relativePath: "@webdav-test/Album/song.flac",
+            size: 8_192,
+            modified: .now
+        )
+        let response = try await source().readRange(for: item, range: 0..<1_024)
+
+        #expect(response.range == 0..<1_024)
+        #expect(response.totalLength == 8_192)
+        #expect(response.data.count == 1_024)
+    }
+
+    @Test("An unknown complete length requires a usable indexed size")
+    func rejectsUnknownCompleteLengthWithoutIndexedSize() async {
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 206,
+                body: Data(repeating: 3, count: 1_024),
+                headers: ["Content-Range": "bytes 0-1023/*"]
+            )
+        }
+        let item = ScannedFile(
+            relativePath: "@webdav-test/Album/song.flac",
+            size: 0,
+            modified: .now
+        )
+
+        await #expect(throws: LibrarySourceError.rangeNotSupported) {
+            try await source().readRange(for: item, range: 0..<1_024)
+        }
+    }
+
+    @Test("Playback rejects a server that ignores byte ranges")
+    func playbackRejectsIgnoredRange() async {
+        WebDAVURLProtocol.handler = { _ in
+            .init(status: 200, body: Data(repeating: 0, count: 16))
+        }
+        let item = ScannedFile(relativePath: "@webdav-test/song.flac", size: 16, modified: .now)
+
+        await #expect(throws: LibrarySourceError.rangeNotSupported) {
+            try await source().readRange(for: item, range: 0..<16)
+        }
+    }
+
+    @Test("Playback rejects mismatched and malformed Content-Range headers")
+    func playbackRejectsBadContentRange() async {
+        let item = ScannedFile(relativePath: "@webdav-test/song.wav", size: 4_096, modified: .now)
+
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 206,
+                body: Data(repeating: 0, count: 1_024),
+                headers: ["Content-Range": "bytes 0-1023/4096"]
+            )
+        }
+        await #expect(throws: LibrarySourceError.rangeNotSupported) {
+            try await source().readRange(for: item, range: 1_024..<2_048)
+        }
+
+        WebDAVURLProtocol.handler = { _ in
+            .init(
+                status: 206,
+                body: Data(repeating: 0, count: 1_024),
+                headers: ["Content-Range": "not-a-range"]
+            )
+        }
+        await #expect(throws: LibrarySourceError.rangeNotSupported) {
+            try await source().readRange(for: item, range: 1_024..<2_048)
+        }
+    }
+
+    @Test("Playback maps authentication failures and bounds each range")
+    func playbackAuthenticationAndRangeLimit() async {
+        WebDAVURLProtocol.handler = { _ in .init(status: 401, body: Data()) }
+        let item = ScannedFile(relativePath: "@webdav-test/song.mp3", size: 2_000_000, modified: .now)
+
+        await #expect(throws: LibrarySourceError.signInRequired) {
+            try await source().readRange(for: item, range: 0..<1_024)
+        }
+        await #expect(throws: LibrarySourceError.invalidConfiguration) {
+            try await source().readRange(for: item, range: 0..<1_048_577)
+        }
     }
 
 }

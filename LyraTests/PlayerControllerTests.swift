@@ -9,16 +9,22 @@ import Testing
 @MainActor
 final class FakeEngine: PlaybackEngine {
     var onTrackFinished: (() -> Void)?
-    var onError: ((String) -> Void)?
+    var onError: ((PlaybackFailure) -> Void)?
     var onTimeUpdate: ((Double) -> Void)?
 
-    private(set) var loadedURLs: [URL] = []
+    private(set) var loadedResources: [PlaybackResource] = []
+    var loadedURLs: [URL] {
+        loadedResources.compactMap {
+            guard case .local(let url) = $0 else { return nil }
+            return url
+        }
+    }
     var isPlaying = false
     var currentTime: Double = 0
     var duration: Double = 200
 
-    func load(url: URL, autoplay: Bool) {
-        loadedURLs.append(url)
+    func load(resource: PlaybackResource, autoplay: Bool) {
+        loadedResources.append(resource)
         currentTime = 0
         isPlaying = autoplay
     }
@@ -252,8 +258,26 @@ struct PlayerControllerTests {
         let (player, engine) = try makeController()
         player.play(tracks: tracks(3), startAt: 0)
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         #expect(player.currentTrack?.title == "Track 2")
+    }
+
+    @Test("An unreachable library stops the queue instead of timing out on every track")
+    func sourceFailureStopsQueue() throws {
+        let (player, engine) = try makeController()
+        player.repeatMode = .all
+        player.play(tracks: tracks(5), startAt: 0)
+
+        engine.onError?(PlaybackFailure(
+            message: "This server can't be streamed from.",
+            isSourceUnavailable: true
+        ))
+
+        #expect(player.isPlaying == false)
+        #expect(player.errorMessage == "This server can't be streamed from.")
+        // The failure condemns every remaining track from the same library, so
+        // nothing after the first load may be attempted.
+        #expect(engine.loadedResources.count == 1)
     }
 
     @Test("A queue of unplayable files stops instead of looping under repeat-all")
@@ -262,7 +286,7 @@ struct PlayerControllerTests {
         player.repeatMode = .all
         player.play(tracks: tracks(3), startAt: 0)
 
-        for _ in 0..<4 { engine.onError?("Corrupt file") }
+        for _ in 0..<4 { engine.onError?(PlaybackFailure(message: "Corrupt file")) }
 
         #expect(player.isPlaying == false)
         #expect(player.errorMessage == "None of these tracks can be played right now.")
@@ -277,9 +301,9 @@ struct PlayerControllerTests {
         player.repeatMode = .all
         player.play(tracks: tracks(2), startAt: 0)
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         engine.onTimeUpdate?(5)
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
 
         #expect(player.currentTrack?.title == "Track 1")
         #expect(player.isPlaying)
@@ -307,12 +331,12 @@ struct PlayerControllerTests {
         player.repeatMode = .all
         player.play(tracks: tracks(2), startAt: 0)
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         // No time update: a file short enough to finish inside one observer
         // tick never reports a non-zero position.
         engine.finishTrack()
-        engine.onError?("Corrupt file")
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
 
         #expect(player.currentTrack?.title == "Track 1")
         #expect(player.isPlaying)
@@ -327,10 +351,10 @@ struct PlayerControllerTests {
         // A zero-length or audio-less file reaches its end at position 0.
         engine.duration = 0
 
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
         engine.finishTrack()
-        engine.onError?("Corrupt file")
-        engine.onError?("Corrupt file")
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
+        engine.onError?(PlaybackFailure(message: "Corrupt file"))
 
         #expect(player.isPlaying == false)
         #expect(player.errorMessage == "None of these tracks can be played right now.")
@@ -373,5 +397,51 @@ struct PlayerControllerTests {
 
         player.seek(to: 99_999)
         #expect(player.currentTime == player.duration)
+    }
+
+    @Test("Playback resolution prefers a local copy over a remote stream")
+    func playbackResolutionPrefersLocalCopy() {
+        let track = Track(
+            relativePath: "@remote/Album/Song.FLAC",
+            title: "Song",
+            fileSize: 42_000
+        )
+        let source = MusicSource(
+            id: "remote",
+            displayName: "Server",
+            kind: .webDAV,
+            serverURL: "https://server.example/music/",
+            username: "listener"
+        )
+        let local = URL(filePath: "/tmp/Song.FLAC")
+
+        #expect(PlaybackResourceResolver.resolve(track: track, localURL: local, source: source) == .local(local))
+    }
+
+    @Test("A remote-only track resolves to a non-secret stream descriptor")
+    func playbackResolutionBuildsRemoteDescriptor() {
+        let track = Track(
+            relativePath: "@remote/Album/Song.FLAC",
+            title: "Song",
+            fileSize: 42_000
+        )
+        let source = MusicSource(
+            id: "remote",
+            displayName: "Server",
+            kind: .webDAV,
+            serverURL: "https://server.example/music/",
+            username: "listener"
+        )
+
+        #expect(PlaybackResourceResolver.resolve(track: track, localURL: nil, source: source) == .remote(
+            RemotePlaybackResource(
+                sourceID: "remote",
+                relativePath: "@remote/Album/Song.FLAC",
+                contentLength: 42_000,
+                duration: 0,
+                fileExtension: "flac"
+            )
+        ))
+        #expect(PlaybackResourceResolver.resolve(track: track, localURL: nil, source: nil) == nil)
     }
 }

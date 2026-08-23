@@ -82,57 +82,13 @@ final class LyraUITests: XCTestCase {
 
     // MARK: - WebDAV
 
-    /// Adds the WebDAV library through the real form, then keeps an album
-    /// offline through the real context menu. The host-side access log is what
-    /// proves indexing did not download the library.
+    /// Adds the WebDAV library through the real form, streams a cloud-only
+    /// track, then keeps its album offline through the real context menu. The
+    /// host-side access log distinguishes ranged playback from the full copy.
     func testWebDAVLibraryIndexesRemotelyThenDownloadsSelection() {
         XCTAssertTrue(waitForText("Library", timeout: 30))
 
-        openSourcesSheet()
-        capture("08-library-sources")
-
-        app.buttons["Add Library"].firstMatch.tap()
-        tapDialogButton("WebDAV Server")
-
-        XCTAssertTrue(app.textFields["Name"].waitForExistence(timeout: 10), "WebDAV form never appeared")
-        app.textFields["Name"].tap()
-        app.textFields["Name"].typeText("Nova NAS")
-        app.textFields["URL"].tap()
-        app.textFields["URL"].typeText("http://127.0.0.1:8099/")
-        app.textFields["Username"].tap()
-        app.textFields["Username"].typeText("lyra")
-        app.secureTextFields["Password"].tap()
-        app.secureTextFields["Password"].typeText("s3cr3t-webdav-pw")
-        capture("09-webdav-form")
-
-        // One retry, because a first request to a just-started local server can
-        // time out — and tapping again is exactly what a user would do.
-        let connected = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Connected.'")).firstMatch
-        app.buttons["Test Connection"].firstMatch.tap()
-        if !connected.waitForExistence(timeout: 60) {
-            app.buttons["Test Connection"].firstMatch.tap()
-            XCTAssertTrue(connected.waitForExistence(timeout: 60),
-                          "Test Connection never reported success")
-        }
-        capture("10-webdav-test-connection")
-
-        app.buttons["Add"].firstMatch.tap()
-
-        // An unsigned simulator build has no Keychain entitlement, so the form
-        // stays open on its "added but the password could not be saved"
-        // warning. That is the designed degradation, not a failure: the library
-        // is already added, so dismiss the form and carry on.
-        let formDone = app.navigationBars["WebDAV Server"].buttons["Done"]
-        if formDone.waitForExistence(timeout: 20) {
-            capture("11a-webdav-keychain-warning")
-            formDone.tap()
-        }
-        _ = app.buttons["Add Library"].firstMatch.waitForExistence(timeout: 20)
-        capture("11-sources-with-webdav")
-
-        let sourcesDone = app.navigationBars["Library Sources"].buttons["Done"]
-        XCTAssertTrue(sourcesDone.waitForExistence(timeout: 10), "sources sheet had no Done button")
-        sourcesDone.tap()
+        addWebDAVLibrary(evidencePrefix: "")
 
         // Remote tracks must show up in the library without being downloaded.
         XCTAssertTrue(app.staticTexts["Event Horizon"].waitForExistence(timeout: 120),
@@ -143,26 +99,92 @@ final class LyraUITests: XCTestCase {
         XCTAssertTrue(app.images["Available remotely"].firstMatch.exists,
                       "remote track is missing its cloud indicator")
 
+        // Play before requesting an offline copy. A visible elapsed time proves
+        // AVFoundation decoded remote bytes; the transport alone appears as
+        // soon as the controller creates its queue and is not enough evidence.
+        app.staticTexts["Event Horizon"].firstMatch.tap()
+        let nowPlaying = app.buttons["Now Playing"]
+        XCTAssertTrue(nowPlaying.waitForExistence(timeout: 20), "streaming transport never appeared")
+        nowPlaying.tap()
+        XCTAssertTrue(app.staticTexts["Event Horizon"].waitForExistence(timeout: 20))
+        let elapsed = app.staticTexts["Playback elapsed"]
+        XCTAssertTrue(elapsed.waitForExistence(timeout: 20), "elapsed time is missing")
+        let deadline = Date().addingTimeInterval(30)
+        var advanced = false
+        while Date() < deadline {
+            if elapsed.label.range(of: "^0:0[4-9]$", options: .regularExpression) != nil {
+                advanced = true
+                break
+            }
+            usleep(200_000)
+        }
+        XCTAssertTrue(advanced, "remote stream never advanced")
+        capture("13-streaming-cloud-only-track")
+        let pauseButtons = app.buttons.matching(identifier: "Pause")
+        var paused = false
+        for index in 0..<pauseButtons.count {
+            let button = pauseButtons.element(boundBy: index)
+            if button.isHittable {
+                button.tap()
+                paused = true
+                break
+            }
+        }
+        XCTAssertTrue(paused, "the remote stream could not be paused")
+        app.navigationBars.buttons["Done"].firstMatch.tap()
+
         selectSection("Albums")
         XCTAssertTrue(app.staticTexts["Deep Field"].waitForExistence(timeout: 30))
-        capture("13-albums-local-and-remote")
+        capture("14-albums-local-and-remote")
 
         // Keep the whole remote album offline, through the context menu a user
         // would actually long-press.
         app.staticTexts["Deep Field"].firstMatch.press(forDuration: 1.2)
         let download = app.buttons.containing(NSPredicate(format: "label BEGINSWITH 'Download'")).firstMatch
         XCTAssertTrue(download.waitForExistence(timeout: 15), "album context menu had no download action")
-        capture("14-offline-context-menu")
+        capture("15-offline-context-menu")
         download.tap()
 
         selectSection("Songs")
         let offline = app.images["Available offline"].firstMatch
         XCTAssertTrue(offline.waitForExistence(timeout: 180), "album never finished downloading for offline use")
-        capture("15-offline-downloaded")
+        capture("16-offline-downloaded")
 
         // Play a remote track from the offline copy.
         app.staticTexts["Event Horizon"].firstMatch.tap()
-        capture("16-playing-remote-track")
+        capture("17-playing-offline-track")
+    }
+
+    /// A server that answers every GET with the whole file cannot be streamed
+    /// from. The user has to be told to download instead, not left with silence
+    /// or a background transfer of megabytes they never asked for. Needs the
+    /// mock server started with LYRA_DAV_IGNORE_RANGE=1.
+    func testStreamingRefusalTellsTheUserToDownloadInstead() {
+        XCTAssertTrue(waitForText("Library", timeout: 30))
+
+        addWebDAVLibrary(evidencePrefix: "27-")
+
+        // Indexing still works: a range-ignoring server costs the app nothing
+        // but path-derived tags, so the tracks are listed and look playable.
+        XCTAssertTrue(app.staticTexts["Event Horizon"].waitForExistence(timeout: 120),
+                      "remote tracks never appeared in the library")
+        capture("28-range-refusing-server-indexed")
+
+        app.staticTexts["Event Horizon"].firstMatch.tap()
+        let nowPlaying = app.buttons["Now Playing"]
+        XCTAssertTrue(nowPlaying.waitForExistence(timeout: 30), "transport never appeared")
+        nowPlaying.tap()
+
+        let alert = app.alerts["Playback Problem"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 60),
+                      "a server that refuses ranges never surfaced a playback problem")
+        XCTAssertTrue(
+            alert.staticTexts.containing(
+                NSPredicate(format: "label CONTAINS 'Download Offline'")
+            ).firstMatch.exists,
+            "the stream failure did not point the user at downloading the track"
+        )
+        capture("29-stream-refused-download-instead")
     }
 
     /// A wrong password has to fail as a message in the form, not a crash.
@@ -380,6 +402,57 @@ final class LyraUITests: XCTestCase {
         if formDone.waitForExistence(timeout: 30) { formDone.tap() }
         let sourcesDone = app.navigationBars["Library Sources"].buttons["Done"]
         if sourcesDone.waitForExistence(timeout: 15) { sourcesDone.tap() }
+    }
+
+    /// Walks the real Add Library → WebDAV Server flow. `evidencePrefix` is
+    /// prepended to the screenshot names so two scenarios photographing the
+    /// same form do not overwrite each other; pass "" for the canonical run.
+    private func addWebDAVLibrary(evidencePrefix: String) {
+        openSourcesSheet()
+        capture("\(evidencePrefix)08-library-sources")
+
+        app.buttons["Add Library"].firstMatch.tap()
+        tapDialogButton("WebDAV Server")
+
+        XCTAssertTrue(app.textFields["Name"].waitForExistence(timeout: 10), "WebDAV form never appeared")
+        app.textFields["Name"].tap()
+        app.textFields["Name"].typeText("Nova NAS")
+        app.textFields["URL"].tap()
+        app.textFields["URL"].typeText("http://127.0.0.1:8099/")
+        app.textFields["Username"].tap()
+        app.textFields["Username"].typeText("lyra")
+        app.secureTextFields["Password"].tap()
+        app.secureTextFields["Password"].typeText("s3cr3t-webdav-pw")
+        capture("\(evidencePrefix)09-webdav-form")
+
+        // One retry, because a first request to a just-started local server can
+        // time out — and tapping again is exactly what a user would do.
+        let connected = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Connected.'")).firstMatch
+        app.buttons["Test Connection"].firstMatch.tap()
+        if !connected.waitForExistence(timeout: 60) {
+            app.buttons["Test Connection"].firstMatch.tap()
+            XCTAssertTrue(connected.waitForExistence(timeout: 60),
+                          "Test Connection never reported success")
+        }
+        capture("\(evidencePrefix)10-webdav-test-connection")
+
+        app.buttons["Add"].firstMatch.tap()
+
+        // An unsigned simulator build has no Keychain entitlement, so the form
+        // stays open on its "added but the password could not be saved"
+        // warning. That is the designed degradation, not a failure: the library
+        // is already added, so dismiss the form and carry on.
+        let formDone = app.navigationBars["WebDAV Server"].buttons["Done"]
+        if formDone.waitForExistence(timeout: 20) {
+            capture("\(evidencePrefix)11a-webdav-keychain-warning")
+            formDone.tap()
+        }
+        _ = app.buttons["Add Library"].firstMatch.waitForExistence(timeout: 20)
+        capture("\(evidencePrefix)11-sources-with-webdav")
+
+        let sourcesDone = app.navigationBars["Library Sources"].buttons["Done"]
+        XCTAssertTrue(sourcesDone.waitForExistence(timeout: 10), "sources sheet had no Done button")
+        sourcesDone.tap()
     }
 
     private func openSourcesSheet() {
