@@ -120,13 +120,16 @@ It generates tagged audio (`scripts/uitest/make-test-media.sh`), serves a
 bytes it actually sends, so partial indexing versus a full download is
 measurable — and drives the real UI: indexing a folder dropped into the drop
 zone, artist and folder browsing, adding a WebDAV library, rejecting bad
-credentials, the scan progress card mid-index, keeping an album offline,
-removing the offline copy and the source without touching the user's files,
-and playing a downloaded track with the server stopped. The groups are run
-separately because they need different server states — one wants a
-deliberately slow server, the offline-first pair needs it stopped between its
-two steps — and each gets a fresh container: an unsigned simulator build has
-no Keychain entitlement, so a WebDAV password never survives a relaunch.
+credentials, streaming a cloud-only track before any download exists, being
+told to download instead when the server ignores `Range`, the scan progress
+card mid-index, keeping an album offline, removing the offline copy and the
+source without touching the user's files, and playing a downloaded track with
+the server stopped. The groups are run separately because they need different
+server states — one wants a deliberately slow server, one a server started
+with `LYRA_DAV_IGNORE_RANGE=1` so every GET answers whole, the offline-first
+pair needs it stopped between its two steps — and each gets a fresh container:
+an unsigned simulator build has no Keychain entitlement, so a WebDAV password
+never survives a relaunch.
 
 Per-group evidence lands in `build/`: screenshots in `build/uitest-evidence/`,
 one `build/webdav-access-*.jsonl` access log per group so a scenario's byte

@@ -112,6 +112,15 @@ start_server 0 build/webdav-access-badcreds.jsonl
 reset_app
 run_group badcreds testWebDAVRejectsBadCredentials
 
+# A server that answers every GET with the whole file cannot be streamed from.
+# Exported rather than prefixed onto the call so the value reaches the server
+# process, not just the shell function.
+export LYRA_DAV_IGNORE_RANGE=1
+start_server 0 build/webdav-access-norange.jsonl
+reset_app
+run_group norange testStreamingRefusalTellsTheUserToDownloadInstead
+unset LYRA_DAV_IGNORE_RANGE
+
 start_server 0 build/webdav-access-preserve.jsonl
 reset_app
 run_group preserve testRemovingOfflineCopiesAndSourceLeavesUserFilesAlone

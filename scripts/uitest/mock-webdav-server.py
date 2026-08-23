@@ -22,6 +22,9 @@ USER, PASSWORD = "lyra", "s3cr3t-webdav-pw"
 # Slows every response so the in-app scan progress card stays on screen long
 # enough to photograph.
 DELAY = float(os.environ.get("LYRA_DAV_DELAY", "0"))
+# Emulates the servers that answer every GET with the whole file. Streaming has
+# to refuse those rather than pull megabytes the user never asked for.
+IGNORE_RANGE = os.environ.get("LYRA_DAV_IGNORE_RANGE") == "1"
 
 lock = threading.Lock()
 
@@ -141,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
         total = os.path.getsize(target)
         rng = self.headers.get("Range")
         start, end, status = 0, total - 1, 200
-        if rng and rng.startswith("bytes="):
+        if rng and rng.startswith("bytes=") and not IGNORE_RANGE:
             spec = rng[6:].split("-")
             start = int(spec[0] or 0)
             if len(spec) > 1 and spec[1]:
@@ -154,11 +157,13 @@ class Handler(BaseHTTPRequestHandler):
             chunk = handle.read(count) if body else b""
 
         record({"method": self.command, "path": unquote(self.path), "status": status,
-                "range": rng, "file_size": total, "bytes_sent": count if body else 0,
+                "range": rng, "range_ignored": bool(rng) and IGNORE_RANGE,
+                "file_size": total, "bytes_sent": count if body else 0,
                 "fraction_of_file": round(count / total, 4) if total else 0})
         self.send_response(status)
         self.send_header("Content-Type", "audio/flac")
-        self.send_header("Accept-Ranges", "bytes")
+        if not IGNORE_RANGE:
+            self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(count))
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
@@ -180,6 +185,13 @@ class Server(ThreadingHTTPServer):
         # worker thread until the process exits.
         request.settimeout(30)
         super().finish_request(request, client_address)
+
+    def handle_error(self, request, client_address):
+        # Refusing an oversized body by hanging up is the behaviour under test
+        # in the range-ignoring mode, so the resulting reset is expected and a
+        # stack trace per aborted transfer would bury the test output.
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
 
 
 if __name__ == "__main__":
