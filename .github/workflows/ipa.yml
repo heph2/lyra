@@ -37,7 +37,7 @@ jobs:
           xcodebuild test \
             -project Lyra.xcodeproj \
             -scheme Lyra \
-            -destination 'platform=iOS Simulator,name=iPhone 16e' \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -derivedDataPath "$RUNNER_TEMP/LyraDerivedData" \
             -quiet
 
