@@ -98,6 +98,8 @@ Confirmed offenders, all fixed — do not reintroduce the pattern:
 
 **Do not present a `.sheet` from a deeply nested view.** Sheets attached inside `ContentUnavailableView` actions or `tabViewBottomAccessory` silently fail to present. Hoist presentation state up (`PlayerController.isNowPlayingPresented`, `LibraryView.showingSources`) and attach the sheet near the navigation root.
 
+**A simulator destination by name picks `OS=latest`, and the newest runtime may not have that device.** `-destination 'platform=iOS Simulator,name=iPhone 16e'` failed on the `macos-26` runner because that image carried iPhone 16e only on iOS 26.2 while its latest runtime, iOS 26.5, offered iPhone 17. Which device exists on which runtime drifts with every runner image, so CI does not name one: the **Select iOS simulator** step in `ipa.yml` reads `xcrun simctl list devices available --json`, takes the highest iOS runtime that has an available iPhone, and passes that device's **UDID** as `-destination "platform=iOS Simulator,id=$SIMULATOR_UDID"`. Do not "simplify" it back to a device name. Locally a name is fine — you know what is installed.
+
 ## Verifying changes
 
 Unit tests cover the logic worth covering: tag parsing, the FLAC reader (against headers synthesised in-test, no binary fixtures), path round-tripping, scan grouping, playlist ordering, the WebDAV client and its scan diff (against stubbed `URLProtocol` responses, no server), offline download bookkeeping, and the full queue/shuffle/repeat state machine via `FakeEngine`.

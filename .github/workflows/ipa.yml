@@ -32,12 +32,51 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      # A destination named by device implies OS=latest, and the runner image may only
+      # carry that device on an older runtime — which is how 'name=iPhone 16e' broke
+      # here. Resolve a UDID from what is actually installed instead.
+      - name: Select iOS simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          selection=$(python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+          import sys
+
+          listing = subprocess.run(
+              ["xcrun", "simctl", "list", "devices", "available", "--json"],
+              check=True, capture_output=True, text=True,
+          ).stdout
+          candidates = []
+          for runtime, devices in json.loads(listing).get("devices", {}).items():
+              match = re.search(r"SimRuntime\.iOS-([0-9]+(?:-[0-9]+)*)$", runtime)
+              if not match:
+                  continue
+              version = tuple(int(part) for part in match.group(1).split("-"))
+              for device in devices:
+                  if device.get("isAvailable") and device.get("name", "").startswith("iPhone"):
+                      candidates.append((version, device["name"], device["udid"]))
+          if not candidates:
+              sys.exit("No available iPhone simulator on this runner")
+          version, name, udid = max(candidates)
+          print(udid, name, "iOS " + ".".join(str(part) for part in version), sep="\t")
+          PY
+          )
+          IFS=$'\t' read -r udid name os <<<"$selection"
+          echo "Testing on $name ($os) $udid"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
       - name: Run tests
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
         run: |
           xcodebuild test \
             -project Lyra.xcodeproj \
             -scheme Lyra \
-            -destination 'platform=iOS Simulator,name=iPhone 16e' \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -derivedDataPath "$RUNNER_TEMP/LyraDerivedData" \
             -quiet
 

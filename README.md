@@ -107,7 +107,7 @@ WebDAV downloads live in Lyra's private container under `Application Support/Lib
 
 ## Releases and CI
 
-[`.github/workflows/ipa.yml`](.github/workflows/ipa.yml) tests and packages every push and pull request on a macOS 26 runner. A semantic-version tag such as `v1.1.0` additionally creates or updates a GitHub Release containing:
+[`.github/workflows/ipa.yml`](.github/workflows/ipa.yml) tests and packages every push and pull request on a macOS 26 runner. It does not hardcode a simulator name: naming a device implies `OS=latest`, and a runner image can carry the named device only on an older runtime. The workflow instead queries `xcrun simctl` for the newest iOS runtime with an available iPhone and tests against that device's UDID. A semantic-version tag such as `v1.1.0` additionally creates or updates a GitHub Release containing:
 
 - `Lyra.ipa` — unsigned, ready for SideStore to sign
 - `Lyra.dSYMs.zip` — symbols for device crash reports
