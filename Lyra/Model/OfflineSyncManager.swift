@@ -285,7 +285,11 @@ final class OfflineSyncManager {
 
             let token = UUID()
             progressFractions[request.relativePath] = 0
-            let task = Task { [weak self] in
+            // Held strongly for the life of the transfer. The manager lives as
+            // long as the app, and every task here terminates — a weak capture
+            // re-captured across isolation boundaries does not compile under
+            // Swift 6.
+            let task = Task {
                 do {
                     let item = ScannedFile(
                         relativePath: request.relativePath,
@@ -293,14 +297,14 @@ final class OfflineSyncManager {
                         modified: request.expectedModified
                     )
                     try await source.download(item, to: destination) { progress in
-                        Task { @MainActor [weak self] in
-                            guard self?.active[request.relativePath]?.token == token else { return }
-                            self?.progressFractions[request.relativePath] = progress.fraction
+                        Task { @MainActor in
+                            guard self.active[request.relativePath]?.token == token else { return }
+                            self.progressFractions[request.relativePath] = progress.fraction
                         }
                     }
-                    self?.complete(request, token: token, result: .success(()))
+                    self.complete(request, token: token, result: .success(()))
                 } catch {
-                    self?.complete(request, token: token, result: .failure(error))
+                    self.complete(request, token: token, result: .failure(error))
                 }
             }
             active[request.relativePath] = ActiveDownload(token: token, task: task)
