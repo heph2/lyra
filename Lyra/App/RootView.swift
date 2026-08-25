@@ -9,7 +9,7 @@ struct RootView: View {
     @State private var selectedTab: TabIdentifier = .library
 
     enum TabIdentifier: Hashable {
-        case library, playlists, search
+        case library, downloads, playlists, search
     }
 
     var body: some View {
@@ -18,6 +18,9 @@ struct RootView: View {
         return TabView(selection: $selectedTab) {
             Tab("Library", systemImage: "music.note.list", value: TabIdentifier.library) {
                 LibraryView()
+            }
+            Tab("Downloads", systemImage: "arrow.down.circle", value: TabIdentifier.downloads) {
+                DownloadsView()
             }
             Tab("Playlists", systemImage: "list.bullet.rectangle", value: TabIdentifier.playlists) {
                 PlaylistsView()

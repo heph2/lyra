@@ -9,10 +9,50 @@ enum OfflineState: String, Codable, Sendable {
     case unavailable
 }
 
+struct OfflineDownloadProgress: Sendable, Equatable {
+    var receivedBytes: Int64
+    var totalBytes: Int64
+
+    var fraction: Double {
+        guard totalBytes > 0 else { return 0 }
+        return min(max(Double(receivedBytes) / Double(totalBytes), 0), 1)
+    }
+}
+
 struct OfflineDownloadRequest: Sendable, Hashable {
     var relativePath: String
     var sourceID: String
     var innerPath: String
+    var expectedBytes: Int64
+    var expectedModified: Date
+}
+
+enum OfflinePresentation {
+    static func downloadedTracks(from tracks: [Track]) -> [Track] {
+        tracks.filter {
+            $0.offlineRequested
+                && ($0.offlineState == .availableOffline || $0.offlineState == .modifiedRemote)
+        }
+    }
+
+    static func aggregateProgress(for tracks: [Track], fractions: [String: Double]) -> Double {
+        let selected = tracks.filter(\.offlineRequested)
+        guard !selected.isEmpty else { return 0 }
+
+        let totalBytes = selected.reduce(Int64(0)) { $0 + max($1.fileSize, 1) }
+        let completed = selected.reduce(0.0) { result, track in
+            let fraction: Double
+            if track.offlineState == .availableOffline {
+                fraction = 1
+            } else if let active = fractions[track.relativePath] {
+                fraction = min(max(active, 0), 1)
+            } else {
+                fraction = track.offlineState == .modifiedRemote ? 1 : 0
+            }
+            return result + Double(max(track.fileSize, 1)) * fraction
+        }
+        return completed / Double(totalBytes)
+    }
 }
 
 /// Owns files Lyra downloaded from remote libraries. These are cache copies,
@@ -94,8 +134,6 @@ enum OfflineLibrary {
 
     static func localURL(for track: Track) -> URL? {
         guard track.offlineRequested,
-              track.offlineState != .availableRemote,
-              track.offlineState != .unavailable,
               let url = fileURL(sourceID: track.sourceID, innerPath: track.innerPath),
               FileManager.default.fileExists(atPath: url.path)
         else { return nil }
@@ -133,6 +171,7 @@ final class OfflineSyncManager {
 
     private(set) var activeDownloads = 0
     private(set) var lastError: String?
+    private(set) var progressFractions: [String: Double] = [:]
 
     init(container: ModelContainer) {
         self.container = container
@@ -160,8 +199,10 @@ final class OfflineSyncManager {
         guard !paths.isEmpty else { return }
         LyraLog.offline.info("Offline copies removal requested tracks=\(paths.count)")
 
+        let remoteTracks = tracks.filter { paths.contains($0.relativePath) }
         for path in paths {
             active.removeValue(forKey: path)?.task.cancel()
+            progressFractions.removeValue(forKey: path)
         }
         pending.removeAll { paths.contains($0.relativePath) }
         // The cancelled tasks report back under a token that is no longer
@@ -170,6 +211,9 @@ final class OfflineSyncManager {
         startPendingDownloads()
 
         Task {
+            for track in remoteTracks {
+                await WebDAVSource.cancelDownload(sourceID: track.sourceID, innerPath: track.innerPath)
+            }
             let store = LibraryStore(modelContainer: container)
             do {
                 let removed = try await store.clearOfflineDownloads(paths: Array(paths))
@@ -197,6 +241,19 @@ final class OfflineSyncManager {
             let code = DiagnosticValue.errorCode(error)
             LyraLog.offline.error("Offline reconciliation failed error=\(code, privacy: .public)")
         }
+    }
+
+    func progress(for track: Track) -> Double {
+        if track.offlineState == .availableOffline { return 1 }
+        return progressFractions[track.relativePath] ?? 0
+    }
+
+    func progress(for tracks: [Track]) -> Double {
+        OfflinePresentation.aggregateProgress(for: tracks, fractions: progressFractions)
+    }
+
+    func isDownloading(_ track: Track) -> Bool {
+        active[track.relativePath] != nil
     }
 
     private func isRemote(_ track: Track) -> Bool {
@@ -227,13 +284,27 @@ final class OfflineSyncManager {
             }
 
             let token = UUID()
-            let task = Task { [weak self] in
+            progressFractions[request.relativePath] = 0
+            // Held strongly for the life of the transfer. The manager lives as
+            // long as the app, and every task here terminates — a weak capture
+            // re-captured across isolation boundaries does not compile under
+            // Swift 6.
+            let task = Task {
                 do {
-                    let item = ScannedFile(relativePath: request.relativePath, size: 0, modified: .distantPast)
-                    try await source.download(item, to: destination)
-                    self?.complete(request, token: token, result: .success(()))
+                    let item = ScannedFile(
+                        relativePath: request.relativePath,
+                        size: request.expectedBytes,
+                        modified: request.expectedModified
+                    )
+                    try await source.download(item, to: destination) { progress in
+                        Task { @MainActor in
+                            guard self.active[request.relativePath]?.token == token else { return }
+                            self.progressFractions[request.relativePath] = progress.fraction
+                        }
+                    }
+                    self.complete(request, token: token, result: .success(()))
                 } catch {
-                    self?.complete(request, token: token, result: .failure(error))
+                    self.complete(request, token: token, result: .failure(error))
                 }
             }
             active[request.relativePath] = ActiveDownload(token: token, task: task)
@@ -248,6 +319,11 @@ final class OfflineSyncManager {
     private func complete(_ request: OfflineDownloadRequest, token: UUID, result: Result<Void, any Error>) {
         guard active[request.relativePath]?.token == token else { return }
         active.removeValue(forKey: request.relativePath)
+        if case .success = result {
+            progressFractions[request.relativePath] = 1
+        } else {
+            progressFractions.removeValue(forKey: request.relativePath)
+        }
         activeDownloads = active.count
         finish(request, result: result)
     }

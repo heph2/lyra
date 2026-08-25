@@ -10,6 +10,7 @@ struct LibraryView: View {
 
     @AppStorage("library.section") private var section: Section = .songs
     @AppStorage("library.sort") private var sort: TrackSort = .title
+    @AppStorage("library.downloadedOnly") private var downloadedOnly = false
     @State private var showingSources = false
 
     @Environment(LibraryScanner.self) private var scanner
@@ -21,6 +22,12 @@ struct LibraryView: View {
             Group {
                 if tracks.isEmpty {
                     EmptyLibraryView { showingSources = true }
+                } else if visibleTracks.isEmpty {
+                    ContentUnavailableView(
+                        "No Downloaded Music",
+                        systemImage: "arrow.down.circle",
+                        description: Text("Turn off Downloaded Only or download music from a remote library.")
+                    )
                 } else {
                     content
                 }
@@ -53,17 +60,21 @@ struct LibraryView: View {
         }
     }
 
+    private var visibleTracks: [Track] {
+        downloadedOnly ? OfflinePresentation.downloadedTracks(from: tracks) : tracks
+    }
+
     @ViewBuilder
     private var content: some View {
         switch section {
         case .songs:
-            SongsListView(tracks: sort.apply(to: tracks))
+            SongsListView(tracks: sort.apply(to: visibleTracks))
         case .albums:
-            AlbumsGridView(albums: LibraryGrouping.albums(from: tracks))
+            AlbumsGridView(albums: LibraryGrouping.albums(from: visibleTracks))
         case .artists:
-            ArtistsListView(artists: LibraryGrouping.artists(from: tracks))
+            ArtistsListView(artists: LibraryGrouping.artists(from: visibleTracks))
         case .folders:
-            FolderBrowserView(tracks: tracks)
+            FolderBrowserView(tracks: visibleTracks)
         }
     }
 
@@ -118,6 +129,7 @@ struct LibraryView: View {
                         }
                     }
                 }
+                Toggle("Downloaded Only", systemImage: "arrow.down.circle.fill", isOn: $downloadedOnly)
                 Divider()
                 Button("Library Sources…", systemImage: "folder.badge.gearshape") {
                     showingSources = true

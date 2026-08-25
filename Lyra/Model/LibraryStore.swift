@@ -146,7 +146,7 @@ actor LibraryStore {
             || abs(track.fileModified.timeIntervalSince(item.file.modified)) >= 1
         if changed,
            track.offlineRequested,
-           track.offlineState == .availableOffline,
+           OfflineLibrary.localURL(for: track) != nil,
            LibraryManager.shared.source(for: split.sourceID)?.isRemote == true {
             // Keep the existing cache playable until the fresh source file is
             // downloaded, but surface that it no longer matches the server.
@@ -243,6 +243,10 @@ actor LibraryStore {
 
         for track in tracks where LibraryManager.shared.source(for: track.sourceID)?.isRemote == true {
             track.offlineRequested = true
+            if track.offlineState == .modifiedRemote {
+                requests.append(downloadRequest(for: track))
+                continue
+            }
             if OfflineLibrary.localURL(for: track) != nil {
                 track.offlineState = .availableOffline
                 continue
@@ -262,7 +266,12 @@ actor LibraryStore {
         var requests: [OfflineDownloadRequest] = []
 
         for track in requested where LibraryManager.shared.source(for: track.sourceID)?.isRemote == true {
-            if track.offlineState == .availableOffline, OfflineLibrary.localURL(for: track) != nil {
+            if track.offlineState == .modifiedRemote {
+                requests.append(downloadRequest(for: track))
+                continue
+            }
+            if OfflineLibrary.localURL(for: track) != nil {
+                track.offlineState = .availableOffline
                 continue
             }
             track.offlineState = .downloading
@@ -319,7 +328,9 @@ actor LibraryStore {
         OfflineDownloadRequest(
             relativePath: track.relativePath,
             sourceID: track.sourceID,
-            innerPath: track.innerPath
+            innerPath: track.innerPath,
+            expectedBytes: track.fileSize,
+            expectedModified: track.fileModified
         )
     }
 }

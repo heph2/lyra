@@ -3,6 +3,8 @@ import SwiftUI
 
 @main
 struct LyraApp: App {
+    @UIApplicationDelegateAdaptor(WebDAVBackgroundAppDelegate.self) private var appDelegate
+
     private let container: ModelContainer
 
     @State private var player: PlayerController

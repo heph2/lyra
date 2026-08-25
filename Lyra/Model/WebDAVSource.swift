@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// The only type in Lyra that speaks HTTP. Its output is the same
 /// `ScannedFile` inventory as a local folder, keeping WebDAV out of the diff,
@@ -272,15 +273,63 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         }
     }
 
-    func download(_ item: ScannedFile, to destination: URL) async throws {
+    func download(
+        _ item: ScannedFile,
+        to destination: URL,
+        progress: @escaping @Sendable (OfflineDownloadProgress) -> Void
+    ) async throws {
         LyraLog.webDAV.info("WebDAV download started")
-        let request = try authenticatedRequest(url: try url(for: item), method: "GET")
+        var request = try authenticatedRequest(url: try url(for: item), method: "GET")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+
+        if !ownsSession {
+            try await WebDAVBackgroundDownloads.shared.download(
+                request,
+                sourceID: id,
+                innerPath: AudioFile.split(trackPath: item.relativePath).innerPath,
+                expectedBytes: item.size,
+                expectedModified: item.modified,
+                origin: origin,
+                progress: progress
+            )
+            return
+        }
+
+        // Injected sessions are used by deterministic URLProtocol tests. Real
+        // downloads use the background delegate below, which reports each byte
+        // callback and survives the app being suspended.
         let (temporaryURL, response) = try await session.download(for: request)
+        try Self.validateDownloadResponse(response)
+        if item.size > 0 {
+            let size = try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard size.map(Int64.init) == item.size else { throw LibrarySourceError.unavailable }
+        }
+        try Self.installDownload(at: temporaryURL, destination: destination)
+        progress(.init(receivedBytes: item.size, totalBytes: item.size))
+        LyraLog.webDAV.info("WebDAV download completed")
+    }
+
+    static func cancelDownload(sourceID: String, innerPath: String) async {
+        await WebDAVBackgroundDownloads.shared.cancel(sourceID: sourceID, innerPath: innerPath)
+    }
+
+    static func cancelDownloads(sourceID: String) async {
+        await WebDAVBackgroundDownloads.shared.cancel(sourceID: sourceID, innerPath: nil)
+    }
+
+    static func validateDownloadResponse(_ response: URLResponse?) throws {
         guard let http = response as? HTTPURLResponse else { throw LibrarySourceError.unavailable }
         LyraLog.webDAV.debug("WebDAV download response status=\(http.statusCode)")
         if http.statusCode == 401 { throw LibrarySourceError.signInRequired }
-        guard (200...299).contains(http.statusCode) else { throw LibrarySourceError.server(status: http.statusCode) }
+        guard http.statusCode == 200 else {
+            if (200...299).contains(http.statusCode) {
+                throw LibrarySourceError.unavailable
+            }
+            throw LibrarySourceError.server(status: http.statusCode)
+        }
+    }
 
+    fileprivate static func installDownload(at temporaryURL: URL, destination: URL) throws {
         let directory = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let replacement = directory.appending(path: UUID().uuidString, directoryHint: .notDirectory)
@@ -290,7 +339,6 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         } else {
             try FileManager.default.moveItem(at: replacement, to: destination)
         }
-        LyraLog.webDAV.info("WebDAV download completed")
     }
 
     private func propfind(_ directory: URL) async throws -> [WebDAVResponse] {
@@ -394,6 +442,381 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     private static func normalizedRootURL(_ raw: String?) -> URL {
         guard let raw, let url = URL(string: raw) else { return URL(string: "http://invalid.local/")! }
         return directoryURL(url)
+    }
+}
+
+/// Reconnects iOS background-session wakeups to the source-owned download
+/// delegate. Keeping this delegate in the WebDAV file preserves the network
+/// boundary even though SwiftUI installs it as the application delegate.
+final class WebDAVBackgroundAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        WebDAVBackgroundDownloads.shared.handleEvents(
+            identifier: identifier,
+            completionHandler: completionHandler
+        )
+    }
+}
+
+private struct BackgroundDownloadDescriptor: Codable, Sendable {
+    var id: UUID
+    var sourceID: String
+    var innerPath: String
+    var expectedBytes: Int64
+    var expectedModified: Date
+
+    var encoded: String? {
+        try? JSONEncoder().encode(self).base64EncodedString()
+    }
+
+    static func decode(_ value: String?) -> Self? {
+        guard let value, let data = Data(base64Encoded: value) else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: data)
+    }
+}
+
+/// One durable session per WebDAV library. iOS owns these transfers while Lyra
+/// is suspended or terminated; rebuilding the same identifier on launch
+/// reconnects the delegate to work the system kept running.
+private final class WebDAVBackgroundDownloads: @unchecked Sendable {
+    static let shared = WebDAVBackgroundDownloads()
+    private static let identifierPrefix =
+        (Bundle.main.bundleIdentifier ?? "care.davinci.lyra") + ".webdav-download."
+
+    private let lock = NSLock()
+    private var clients: [String: WebDAVBackgroundDownloadClient] = [:]
+
+    func download(
+        _ request: URLRequest,
+        sourceID: String,
+        innerPath: String,
+        expectedBytes: Int64,
+        expectedModified: Date,
+        origin: WebDAVOrigin,
+        progress: @escaping @Sendable (OfflineDownloadProgress) -> Void
+    ) async throws {
+        let client = client(for: sourceID, origin: origin)
+        try await client.download(
+            request,
+            innerPath: innerPath,
+            expectedBytes: expectedBytes,
+            expectedModified: expectedModified,
+            progress: progress
+        )
+    }
+
+    func cancel(sourceID: String, innerPath: String?) async {
+        guard let source = LibraryManager.shared.source(for: sourceID),
+              let rawURL = source.serverURL,
+              let url = URL(string: rawURL)
+        else { return }
+        await client(for: sourceID, origin: WebDAVOrigin(url)).cancel(innerPath: innerPath)
+    }
+
+    func handleEvents(identifier: String, completionHandler: @escaping @Sendable () -> Void) {
+        guard identifier.hasPrefix(Self.identifierPrefix) else {
+            completionHandler()
+            return
+        }
+        let sourceID = String(identifier.dropFirst(Self.identifierPrefix.count))
+        guard let source = LibraryManager.shared.source(for: sourceID),
+              let rawURL = source.serverURL,
+              let url = URL(string: rawURL)
+        else {
+            completionHandler()
+            return
+        }
+        client(for: sourceID, origin: WebDAVOrigin(url))
+            .setBackgroundCompletionHandler(completionHandler)
+    }
+
+    private func client(for sourceID: String, origin: WebDAVOrigin) -> WebDAVBackgroundDownloadClient {
+        lock.lock()
+        defer { lock.unlock() }
+        if let client = clients[sourceID] { return client }
+        let client = WebDAVBackgroundDownloadClient(
+            identifier: Self.identifierPrefix + sourceID,
+            sourceID: sourceID,
+            origin: origin
+        )
+        clients[sourceID] = client
+        return client
+    }
+}
+
+private final class WebDAVBackgroundDownloadClient: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private struct Transfer {
+        var continuation: CheckedContinuation<Void, any Error>
+        var progress: @Sendable (OfflineDownloadProgress) -> Void
+    }
+
+    private let sourceID: String
+    private let origin: WebDAVOrigin
+    private let lock = NSLock()
+    private var transfers: [Int: Transfer] = [:]
+    private var taskDescriptors: [Int: BackgroundDownloadDescriptor] = [:]
+    private var registeredTasks: [Int: URLSessionTask] = [:]
+    private var terminalOutcomes: [Int: Result<Void, any Error>] = [:]
+    private var installationErrors: [Int: any Error] = [:]
+    private var cancelledTransfers = Set<UUID>()
+    private var wholeSourceCancelled = false
+    private var backgroundCompletionHandler: (@Sendable () -> Void)?
+    private var backgroundEventsFinished = false
+    private var session: URLSession!
+
+    init(identifier: String, sourceID: String, origin: WebDAVOrigin) {
+        self.sourceID = sourceID
+        self.origin = origin
+        super.init()
+        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+        configuration.isDiscretionary = false
+        configuration.sessionSendsLaunchEvents = true
+        configuration.waitsForConnectivity = true
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }
+
+    func download(
+        _ request: URLRequest,
+        innerPath: String,
+        expectedBytes: Int64,
+        expectedModified: Date,
+        progress: @escaping @Sendable (OfflineDownloadProgress) -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        guard !lock.withLock({ wholeSourceCancelled }) else { throw CancellationError() }
+        lock.withLock { backgroundEventsFinished = false }
+
+        let tasks = await session.allTasks
+        try Task.checkCancellation()
+        let registeredIDs = lock.withLock { Set(transfers.keys) }
+        let candidates = tasks.compactMap { task -> (URLSessionDownloadTask, BackgroundDownloadDescriptor)? in
+            guard let task = task as? URLSessionDownloadTask,
+                  let descriptor = BackgroundDownloadDescriptor.decode(task.taskDescription),
+                  descriptor.sourceID == sourceID,
+                  descriptor.innerPath == innerPath
+            else { return nil }
+            return (task, descriptor)
+        }
+        let stale = candidates.filter {
+            $0.1.expectedBytes != expectedBytes || $0.1.expectedModified != expectedModified
+        }
+        lock.withLock {
+            for (_, descriptor) in stale { cancelledTransfers.insert(descriptor.id) }
+        }
+        stale.forEach { $0.0.cancel() }
+
+        let restoredTask = candidates.first {
+            $0.0.state != .canceling
+                && $0.0.state != .completed
+                && !registeredIDs.contains($0.0.taskIdentifier)
+                && $0.1.expectedBytes == expectedBytes
+                && $0.1.expectedModified == expectedModified
+        }?.0
+
+        let task = restoredTask ?? session.downloadTask(with: request)
+        let descriptor = restoredTask.flatMap {
+            BackgroundDownloadDescriptor.decode($0.taskDescription)
+        } ?? BackgroundDownloadDescriptor(
+            id: UUID(),
+            sourceID: sourceID,
+            innerPath: innerPath,
+            expectedBytes: expectedBytes,
+            expectedModified: expectedModified
+        )
+        guard let encoded = descriptor.encoded else { throw LibrarySourceError.invalidConfiguration }
+        task.taskDescription = encoded
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                var immediate: Result<Void, any Error>?
+                var shouldCancel = false
+                lock.withLock {
+                    if Task.isCancelled
+                        || wholeSourceCancelled
+                        || cancelledTransfers.contains(descriptor.id) {
+                        immediate = .failure(CancellationError())
+                        shouldCancel = true
+                    } else if let outcome = terminalOutcomes.removeValue(forKey: task.taskIdentifier) {
+                        immediate = outcome
+                    } else if transfers[task.taskIdentifier] != nil {
+                        immediate = .failure(LibrarySourceError.unavailable)
+                    } else {
+                        transfers[task.taskIdentifier] = Transfer(
+                            continuation: continuation,
+                            progress: progress
+                        )
+                        taskDescriptors[task.taskIdentifier] = descriptor
+                        registeredTasks[task.taskIdentifier] = task
+                    }
+                }
+
+                if let immediate {
+                    if shouldCancel { task.cancel() }
+                    continuation.resume(with: immediate)
+                } else {
+                    task.resume()
+                }
+            }
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func cancel(innerPath: String?) async {
+        let knownTasks: [URLSessionTask] = lock.withLock {
+            if innerPath == nil { wholeSourceCancelled = true }
+            var matches: [URLSessionTask] = []
+            for (taskID, descriptor) in taskDescriptors
+                where innerPath == nil || descriptor.innerPath == innerPath {
+                cancelledTransfers.insert(descriptor.id)
+                if let task = registeredTasks[taskID] { matches.append(task) }
+            }
+            return matches
+        }
+        knownTasks.forEach { $0.cancel() }
+
+        let knownIDs = Set(knownTasks.map(\.taskIdentifier))
+        for task in await session.allTasks where !knownIDs.contains(task.taskIdentifier) {
+            guard let descriptor = BackgroundDownloadDescriptor.decode(task.taskDescription),
+                  descriptor.sourceID == sourceID,
+                  innerPath == nil || descriptor.innerPath == innerPath
+            else { continue }
+            lock.withLock { cancelledTransfers.insert(descriptor.id) }
+            task.cancel()
+        }
+    }
+
+    func setBackgroundCompletionHandler(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if backgroundEventsFinished {
+            backgroundEventsFinished = false
+            lock.unlock()
+            DispatchQueue.main.async(execute: handler)
+        } else {
+            backgroundCompletionHandler = handler
+            lock.unlock()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        lock.lock()
+        let progress = transfers[downloadTask.taskIdentifier]?.progress
+        lock.unlock()
+        let descriptor = BackgroundDownloadDescriptor.decode(downloadTask.taskDescription)
+        let expected = totalBytesExpectedToWrite > 0
+            ? totalBytesExpectedToWrite
+            : descriptor?.expectedBytes ?? 0
+        progress?(.init(receivedBytes: totalBytesWritten, totalBytes: expected))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        do {
+            try WebDAVSource.validateDownloadResponse(downloadTask.response)
+            guard let descriptor = BackgroundDownloadDescriptor.decode(downloadTask.taskDescription),
+                  descriptor.sourceID == sourceID
+            else { throw LibrarySourceError.invalidConfiguration }
+
+            try installDownload(at: location, descriptor: descriptor)
+        } catch {
+            lock.lock()
+            installationErrors[downloadTask.taskIdentifier] = error
+            lock.unlock()
+        }
+    }
+
+    private func installDownload(at location: URL, descriptor: BackgroundDownloadDescriptor) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !wholeSourceCancelled,
+              !cancelledTransfers.contains(descriptor.id),
+              let destination = OfflineLibrary.fileURL(
+                sourceID: descriptor.sourceID,
+                innerPath: descriptor.innerPath
+              )
+        else { throw CancellationError() }
+        if descriptor.expectedBytes > 0 {
+            let size = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard size.map(Int64.init) == descriptor.expectedBytes else {
+                throw LibrarySourceError.unavailable
+            }
+        }
+        try WebDAVSource.installDownload(at: location, destination: destination)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let result: Result<Void, any Error>
+        lock.lock()
+        let installationError = installationErrors.removeValue(forKey: task.taskIdentifier)
+        if let installationError {
+            result = .failure(installationError)
+        } else if let error {
+            if (error as? URLError)?.code == .cancelled {
+                result = .failure(CancellationError())
+            } else {
+                result = .failure(LibrarySourceError.unavailable)
+            }
+        } else {
+            result = .success(())
+        }
+
+        let transfer = transfers.removeValue(forKey: task.taskIdentifier)
+        taskDescriptors.removeValue(forKey: task.taskIdentifier)
+        registeredTasks.removeValue(forKey: task.taskIdentifier)
+        if transfer == nil {
+            // `allTasks` and continuation registration are separate system
+            // callbacks. Retaining the terminal result closes the gap where a
+            // restored task finishes between them.
+            terminalOutcomes[task.taskIdentifier] = result
+        }
+        lock.unlock()
+
+        transfer?.continuation.resume(with: result)
+        if case .success = result {
+            LyraLog.webDAV.info("WebDAV background download completed")
+        }
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        lock.lock()
+        let handler = backgroundCompletionHandler
+        backgroundCompletionHandler = nil
+        if handler == nil { backgroundEventsFinished = true }
+        lock.unlock()
+        if let handler { DispatchQueue.main.async(execute: handler) }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let target = request.url, WebDAVOrigin(target) == origin else {
+            LyraLog.webDAV.error("Blocked a WebDAV download redirect outside the configured server")
+            completionHandler(nil)
+            return
+        }
+        var request = request
+        if let authorization = task.originalRequest?.value(forHTTPHeaderField: "Authorization") {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        completionHandler(request)
     }
 }
 

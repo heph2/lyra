@@ -14,6 +14,7 @@ struct TrackRow: View {
     var subtitle: String?
 
     @Environment(PlayerController.self) private var player
+    @Environment(OfflineSyncManager.self) private var offlineSync
 
     private var isCurrent: Bool {
         player.currentTrack?.relativePath == track.relativePath
@@ -80,15 +81,21 @@ struct TrackRow: View {
                     Image(systemName: "cloud")
                         .accessibilityLabel("Available remotely")
                 case .downloading:
-                    ProgressView()
-                        .controlSize(.small)
+                    CircularDownloadProgressView(progress: offlineSync.progress(for: track), size: 16)
                         .accessibilityLabel("Downloading for offline playback")
+                        .accessibilityValue(Text(offlineSync.progress(for: track), format: .percent))
                 case .availableOffline:
                     Image(systemName: "checkmark.circle.fill")
                         .accessibilityLabel("Available offline")
                 case .modifiedRemote:
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .accessibilityLabel("Updated version downloading")
+                    if offlineSync.isDownloading(track) {
+                        CircularDownloadProgressView(progress: offlineSync.progress(for: track), size: 16)
+                            .accessibilityLabel("Updated version downloading")
+                            .accessibilityValue(Text(offlineSync.progress(for: track), format: .percent))
+                    } else {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .accessibilityLabel("Downloaded copy needs updating")
+                    }
                 case .unavailable:
                     Image(systemName: "exclamationmark.triangle")
                         .accessibilityLabel("Offline download unavailable")
@@ -98,6 +105,23 @@ struct TrackRow: View {
             .foregroundStyle(track.offlineState == .availableOffline ? Color.green : Color.secondary)
             .frame(width: 16, height: 16)
         }
+    }
+}
+
+struct CircularDownloadProgressView: View {
+    let progress: Double
+    var size: CGFloat = 20
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(.gray.opacity(0.28))
+            Circle()
+                .trim(from: 0, to: min(max(progress, 0), 1))
+                .stroke(.primary, style: StrokeStyle(lineWidth: max(2, size * 0.1), lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: size, height: size)
     }
 }
 

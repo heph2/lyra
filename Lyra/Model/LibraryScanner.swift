@@ -137,6 +137,9 @@ final class LibraryScanner {
     func removeSource(_ sourceID: String) async {
         do {
             let wasRemote = LibraryManager.shared.source(for: sourceID)?.isRemote == true
+            if wasRemote {
+                await WebDAVSource.cancelDownloads(sourceID: sourceID)
+            }
             try LibraryManager.shared.remove(sourceID: sourceID)
             let store = LibraryStore(modelContainer: container)
             try await store.removeTracks(ofSource: sourceID)

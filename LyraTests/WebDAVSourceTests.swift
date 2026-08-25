@@ -260,6 +260,37 @@ struct WebDAVSourceTests {
         await #expect(throws: LibrarySourceError.self) { try await source().scan() }
     }
 
+    @Test("Offline downloads accept only complete HTTP responses")
+    func validatesFullDownloadStatus() throws {
+        let url = URL(string: "https://server.example/music/song.flac")!
+        let complete = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        let partial = HTTPURLResponse(url: url, statusCode: 206, httpVersion: nil, headerFields: nil)!
+        let empty = HTTPURLResponse(url: url, statusCode: 204, httpVersion: nil, headerFields: nil)!
+
+        try WebDAVSource.validateDownloadResponse(complete)
+        #expect(throws: LibrarySourceError.self) { try WebDAVSource.validateDownloadResponse(partial) }
+        #expect(throws: LibrarySourceError.self) { try WebDAVSource.validateDownloadResponse(empty) }
+    }
+
+    @Test("A truncated status-200 offline download is rejected")
+    func rejectsTruncatedOfflineDownload() async {
+        WebDAVURLProtocol.handler = { _ in
+            .init(status: 200, body: Data(repeating: 1, count: 3))
+        }
+        let destination = URL.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let item = ScannedFile(
+            relativePath: "@webdav-test/Album/song.mp3",
+            size: 4,
+            modified: .now
+        )
+
+        await #expect(throws: LibrarySourceError.self) {
+            try await source().download(item, to: destination) { _ in }
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
     @Test("A server that ignores the range is rejected rather than downloaded whole")
     func rejectsIgnoredRange() async {
         WebDAVURLProtocol.handler = { request in
