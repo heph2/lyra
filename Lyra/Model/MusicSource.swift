@@ -59,7 +59,11 @@ protocol RemoteLibrarySource: LibrarySource {
     /// asks for the smallest prefix that answers its question.
     func metadataHeader(for item: ScannedFile, maxBytes: Int) async throws -> Data
     func readRange(for item: ScannedFile, range: Range<Int64>) async throws -> RemoteByteRangeResponse
-    func download(_ item: ScannedFile, to destination: URL) async throws
+    func download(
+        _ item: ScannedFile,
+        to destination: URL,
+        progress: @escaping @Sendable (OfflineDownloadProgress) -> Void
+    ) async throws
 }
 
 struct RemoteByteRangeResponse: Sendable, Equatable {

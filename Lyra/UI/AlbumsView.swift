@@ -28,10 +28,23 @@ struct AlbumsGridView: View {
 private struct AlbumCell: View {
     let album: LibraryGrouping.AlbumGroup
 
+    @Environment(OfflineSyncManager.self) private var offlineSync
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { proxy in
                 ArtworkView(hash: album.artworkHash, size: proxy.size.width, cornerRadius: 8)
+                    .overlay(alignment: .bottomTrailing) {
+                        if album.tracks.contains(where: offlineSync.isDownloading) {
+                            CircularDownloadProgressView(
+                                progress: offlineSync.progress(for: album.tracks),
+                                size: 30
+                            )
+                            .padding(8)
+                            .accessibilityLabel("Album download progress")
+                            .accessibilityValue(Text(offlineSync.progress(for: album.tracks), format: .percent))
+                        }
+                    }
             }
             .aspectRatio(1, contentMode: .fit)
 

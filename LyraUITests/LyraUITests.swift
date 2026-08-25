@@ -150,6 +150,20 @@ final class LyraUITests: XCTestCase {
         XCTAssertTrue(offline.waitForExistence(timeout: 180), "album never finished downloading for offline use")
         capture("16-offline-downloaded")
 
+        app.tabBars.buttons["Downloads"].tap()
+        XCTAssertTrue(app.staticTexts["Overall Progress"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Event Horizon"].exists, "downloaded track is missing from Downloads")
+        capture("16a-downloads-tab")
+
+        app.tabBars.buttons["Library"].tap()
+        app.buttons["Options"].tap()
+        let downloadedOnly = app.switches["Downloaded Only"]
+        XCTAssertTrue(downloadedOnly.waitForExistence(timeout: 10), "downloaded-only filter is missing")
+        downloadedOnly.tap()
+        XCTAssertTrue(app.staticTexts["Event Horizon"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["First Program"].exists, "local-only track survived downloaded-only filter")
+        capture("16b-downloaded-only-filter")
+
         // Play a remote track from the offline copy.
         app.staticTexts["Event Horizon"].firstMatch.tap()
         capture("17-playing-offline-track")

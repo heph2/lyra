@@ -122,7 +122,11 @@ private final class InMemoryRangeSource: RemoteLibrarySource, @unchecked Sendabl
         )
     }
 
-    func download(_ item: ScannedFile, to destination: URL) async throws {
+    func download(
+        _ item: ScannedFile,
+        to destination: URL,
+        progress: @escaping @Sendable (OfflineDownloadProgress) -> Void
+    ) async throws {
         throw LibrarySourceError.unavailable
     }
 }
