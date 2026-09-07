@@ -12,13 +12,14 @@ struct LibraryView: View {
     @AppStorage("library.sort") private var sort: TrackSort = .title
     @AppStorage("library.downloadedOnly") private var downloadedOnly = false
     @State private var showingSources = false
+    @Binding var path: NavigationPath
 
     @Environment(LibraryScanner.self) private var scanner
     @Environment(PlayerController.self) private var player
     @Query private var tracks: [Track]
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if tracks.isEmpty {
                     EmptyLibraryView { showingSources = true }

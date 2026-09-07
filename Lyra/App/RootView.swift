@@ -7,6 +7,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTab: TabIdentifier = .library
+    @State private var libraryPath = NavigationPath()
     @State private var initialScanFinished = false
 
     enum TabIdentifier: Hashable {
@@ -18,7 +19,7 @@ struct RootView: View {
 
         return TabView(selection: $selectedTab) {
             Tab("Library", systemImage: "music.note.list", value: TabIdentifier.library) {
-                LibraryView()
+                LibraryView(path: $libraryPath)
             }
             Tab("Downloads", systemImage: "arrow.down.circle", value: TabIdentifier.downloads) {
                 DownloadsView()
