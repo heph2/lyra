@@ -59,6 +59,10 @@ final class LyraUITests: XCTestCase {
 
         // Play the first track and confirm the transport takes over.
         app.staticTexts["First Program"].firstMatch.tap()
+        XCTAssertTrue(
+            app.navigationBars["Analytical Engine"].waitForExistence(timeout: 10),
+            "starting album playback returned to the albums grid"
+        )
         capture("04-mini-player")
 
         let nowPlaying = app.buttons["Now Playing"]
