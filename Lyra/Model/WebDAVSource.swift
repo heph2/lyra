@@ -62,10 +62,10 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
     private static let maxDirectories = 20_000
     private static let maxFiles = 200_000
     private static let maxPlaybackRangeBytes: Int64 = 1_048_576
-    /// A stalled playback range has to fail fast. `PlayerController` walks to
-    /// the next track when a load fails, and the default minute-long timeout
-    /// turns one unreachable server into minutes of apparent silence.
-    private static let playbackRangeTimeout: TimeInterval = 15
+    /// Interactive remote work has to fail fast. The default minute-long
+    /// timeout leaves the scan card up for every stalled inventory or metadata
+    /// request, and makes an unreachable playback queue sound frozen.
+    private static let interactiveRequestTimeout: TimeInterval = 15
 
     func scan() async throws -> [ScannedFile] {
         var pending = [(url: rootURL, depth: 0)]
@@ -123,6 +123,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
         let limit = max(1, maxBytes)
         let requestURL = try url(for: item)
         var request = try authenticatedRequest(url: requestURL, method: "GET")
+        request.timeoutInterval = Self.interactiveRequestTimeout
         request.setValue("bytes=0-\(limit - 1)", forHTTPHeaderField: "Range")
 
         // Declining the body from the headers is what keeps a rejected response
@@ -160,7 +161,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
 
         var request = try authenticatedRequest(url: try url(for: item), method: "GET")
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = Self.playbackRangeTimeout
+        request.timeoutInterval = Self.interactiveRequestTimeout
         // Byte offsets describe the stored audio file, not a compressed HTTP
         // representation. Asking intermediaries for identity encoding keeps
         // Content-Range and the bytes handed to AVFoundation in agreement.
@@ -343,6 +344,7 @@ final class WebDAVSource: RemoteLibrarySource, @unchecked Sendable {
 
     private func propfind(_ directory: URL) async throws -> [WebDAVResponse] {
         var request = try authenticatedRequest(url: directory, method: "PROPFIND")
+        request.timeoutInterval = Self.interactiveRequestTimeout
         request.setValue("1", forHTTPHeaderField: "Depth")
         request.setValue("text/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data("""

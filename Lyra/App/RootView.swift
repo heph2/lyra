@@ -7,6 +7,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTab: TabIdentifier = .library
+    @State private var initialScanFinished = false
 
     enum TabIdentifier: Hashable {
         case library, downloads, playlists, search
@@ -41,10 +42,12 @@ struct RootView: View {
         .task {
             // Files dropped in before first launch should just be there.
             await scanner.scan()
+            initialScanFinished = true
         }
         .onChange(of: scenePhase) { _, phase in
-            // Coming back from the Files app is the moment new music appears.
-            if phase == .active {
+            // The launch transition to active races the initial task; only
+            // later activations can mean the user added music in Files.
+            if phase == .active, initialScanFinished {
                 scanner.scanInBackground()
             }
         }
