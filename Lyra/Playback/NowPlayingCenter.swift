@@ -15,7 +15,6 @@ final class NowPlayingCenter {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     var onSeek: ((Double) -> Void)?
-    var onSkip: ((Double) -> Void)?
 
     private var isWired = false
 
@@ -40,10 +39,12 @@ final class NowPlayingCenter {
             Task { @MainActor in self?.onToggle?() }
             return .success
         }
+        center.nextTrackCommand.isEnabled = true
         center.nextTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.onNext?() }
             return .success
         }
+        center.previousTrackCommand.isEnabled = true
         center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.onPrevious?() }
             return .success
@@ -58,23 +59,11 @@ final class NowPlayingCenter {
             return .success
         }
 
-        center.skipForwardCommand.isEnabled = true
-        center.skipForwardCommand.preferredIntervals = [15]
-        center.skipForwardCommand.addTarget { [weak self] event in
-            guard let event = event as? MPSkipIntervalCommandEvent else { return .commandFailed }
-            let interval = event.interval
-            Task { @MainActor in self?.onSkip?(interval) }
-            return .success
-        }
-
-        center.skipBackwardCommand.isEnabled = true
-        center.skipBackwardCommand.preferredIntervals = [15]
-        center.skipBackwardCommand.addTarget { [weak self] event in
-            guard let event = event as? MPSkipIntervalCommandEvent else { return .commandFailed }
-            let interval = event.interval
-            Task { @MainActor in self?.onSkip?(-interval) }
-            return .success
-        }
+        // Compact Now Playing surfaces choose interval skips over track
+        // navigation when both are advertised. Lyra is a music player, so the
+        // Dynamic Island should reserve those controls for Previous and Next.
+        center.skipForwardCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
 
         // No accounts, no streaming service — these have no meaning in Lyra.
         center.likeCommand.isEnabled = false

@@ -544,7 +544,6 @@ final class PlayerController {
         nowPlaying.onNext = { [weak self] in self?.next() }
         nowPlaying.onPrevious = { [weak self] in self?.previous() }
         nowPlaying.onSeek = { [weak self] seconds in self?.seek(to: seconds) }
-        nowPlaying.onSkip = { [weak self] delta in self?.skip(by: delta) }
         nowPlaying.wireRemoteCommands()
     }
 }
