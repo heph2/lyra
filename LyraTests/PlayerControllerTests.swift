@@ -1,4 +1,5 @@
 import Foundation
+import MediaPlayer
 import SwiftData
 import Testing
 
@@ -63,6 +64,17 @@ struct PlayerControllerTests {
 
     private func tracks(_ count: Int) -> [Track] {
         (1...count).map { Track(relativePath: "t\($0).mp3", title: "Track \($0)", duration: 200) }
+    }
+
+    @Test("Remote controls advertise track navigation instead of interval skips")
+    func remoteControlsPreferTracks() throws {
+        _ = try makeController()
+        let center = MPRemoteCommandCenter.shared()
+
+        #expect(center.nextTrackCommand.isEnabled)
+        #expect(center.previousTrackCommand.isEnabled)
+        #expect(!center.skipForwardCommand.isEnabled)
+        #expect(!center.skipBackwardCommand.isEnabled)
     }
 
     @Test("Playing a list starts at the requested index")
