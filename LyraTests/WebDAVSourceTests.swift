@@ -48,6 +48,29 @@ struct WebDAVSourceTests {
         )
     }
 
+    @Test("Inventory and metadata requests use a bounded timeout")
+    func boundsScanRequests() async throws {
+        WebDAVURLProtocol.handler = { request in
+            #expect(request.timeoutInterval == 15)
+            if request.httpMethod == "PROPFIND" {
+                return .init(
+                    status: 207,
+                    body: webDAVXML("<multistatus xmlns=\"DAV:\"><response><href>/music/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response></multistatus>")
+                )
+            }
+            return .init(status: 200, body: Data("ID3 tiny".utf8))
+        }
+
+        let source = source()
+        #expect(try await source.scan().isEmpty)
+        let item = ScannedFile(
+            relativePath: "@webdav-test/song.mp3",
+            size: 8,
+            modified: .now
+        )
+        #expect(try await source.metadataHeader(for: item, maxBytes: 1_024) == Data("ID3 tiny".utf8))
+    }
+
     @Test("Nested collections, namespaces, and encoded names become stable relative paths")
     func scansNestedCollection() async throws {
         WebDAVURLProtocol.handler = { request in
