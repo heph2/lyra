@@ -18,9 +18,21 @@ enum MetadataReader {
     static func read(url: URL, relativePath: String) async -> TrackMetadata {
         var metadata = await readViaAVFoundation(url: url)
 
-        if url.pathExtension.lowercased() == "flac", metadata.needsTagFallback {
-            if let flac = FlacTagReader.read(url: url) {
-                metadata.merge(filling: flac)
+        // AVFoundation can expose MP3 text frames while omitting their APIC
+        // image, so use the bounded native tag readers whenever a field is
+        // missing rather than treating the file as artless.
+        if metadata.needsTagFallback {
+            switch url.pathExtension.lowercased() {
+            case "flac":
+                if let flac = FlacTagReader.read(url: url) {
+                    metadata.merge(filling: flac)
+                }
+            case "mp3":
+                if let id3 = ID3TagReader.read(url: url) {
+                    metadata.merge(filling: id3)
+                }
+            default:
+                break
             }
         }
 
@@ -174,6 +186,26 @@ enum MetadataReader {
 }
 
 private enum ID3TagReader {
+    private static let maxTagBytes = 32 * 1024 * 1024
+
+    static func read(url: URL) -> TrackMetadata? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        guard let header = try? handle.read(upToCount: 10), header.count == 10 else { return nil }
+        let bytes = [UInt8](header)
+        guard bytes[0] == 0x49, bytes[1] == 0x44, bytes[2] == 0x33,
+              (2...4).contains(Int(bytes[3])),
+              let tagSize = synchsafe(bytes[6...9])
+        else { return nil }
+
+        let bodySize = min(tagSize, maxTagBytes - 10)
+        guard let body = try? handle.read(upToCount: bodySize), body.count == bodySize else { return nil }
+        var tag = header
+        tag.append(body)
+        return read(tag)
+    }
+
     static func read(_ data: Data) -> TrackMetadata? {
         let bytes = [UInt8](data)
         guard bytes.count >= 10, Array(bytes[0..<3]) == Array("ID3".utf8),

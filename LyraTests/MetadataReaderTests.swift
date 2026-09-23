@@ -98,6 +98,24 @@ struct PathFallbackTests {
         }
     }
 
+    @Test("A local MP3 with ID3 cover art keeps its picture when AVFoundation omits it")
+    func localMP3Artwork() async throws {
+        let image = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        var tag = Data("ID3".utf8)
+        tag.append(contentsOf: [0x03, 0x00, 0x00])
+        let frame = attachedPictureFrame(image)
+        tag.append(contentsOf: synchsafe(frame.count))
+        tag.append(frame)
+
+        let url = URL.temporaryDirectory.appending(path: UUID().uuidString + ".mp3")
+        try tag.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let metadata = await MetadataReader.read(url: url, relativePath: "Artist/Album/01 Song.mp3")
+
+        #expect(metadata.artworkData == image)
+    }
+
     /// A remote scan only ever reads the front of the file, so the declared
     /// ID3 tag size routinely exceeds what arrived. The frames that did arrive
     /// still have to be read, or a WebDAV library indexes as filenames.
@@ -125,6 +143,24 @@ struct PathFallbackTests {
 
     private func synchsafe(_ value: Int) -> [UInt8] {
         [24, 16, 8, 0].map { UInt8((value >> $0) & 0x7F) }
+    }
+
+    private func attachedPictureFrame(_ image: Data) -> Data {
+        var body = Data([0x03])
+        body.append(contentsOf: Data("image/jpeg".utf8))
+        body.append(0)
+        body.append(3)
+        body.append(0)
+        body.append(image)
+
+        var frame = Data("APIC".utf8)
+        frame.append(contentsOf: [
+            UInt8((body.count >> 24) & 0xFF), UInt8((body.count >> 16) & 0xFF),
+            UInt8((body.count >> 8) & 0xFF), UInt8(body.count & 0xFF),
+        ])
+        frame.append(contentsOf: [0x00, 0x00])
+        frame.append(body)
+        return frame
     }
 
     private func textFrame(_ identifier: String, _ text: String) -> Data {
